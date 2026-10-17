@@ -638,6 +638,14 @@ class AppController {
       window.streamPlayer.playFeed(feed);
     }
 
+    // On mobile devices, smoothly scroll up to the video player
+    if (window.innerWidth <= 900) {
+      const inspectorEl = document.querySelector('.panel-stream-inspector');
+      if (inspectorEl) {
+        inspectorEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+
     // Update favorite button state
     const favBtn = document.getElementById('btn-toggle-favorite');
     if (favBtn) {

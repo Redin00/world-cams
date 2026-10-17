@@ -30,11 +30,14 @@ class WorldMap {
       maxZoom: 19
     }).addTo(this.map);
 
-    // Initialize MarkerCluster
+    // Initialize MarkerCluster with chunked loading (prevents UI freeze on thousands of cameras)
     this.markersGroup = L.markerClusterGroup({
       showCoverageOnHover: false,
       maxClusterRadius: 45,
-      spiderfyOnMaxZoom: true
+      spiderfyOnMaxZoom: true,
+      chunkedLoading: true,
+      chunkInterval: 100,
+      chunkDelay: 20
     });
     this.map.addLayer(this.markersGroup);
 
