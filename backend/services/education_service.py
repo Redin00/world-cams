@@ -1,0 +1,152 @@
+from typing import List, Dict, Any
+
+EDUCATION_ARTICLES = [
+    {
+        "id": "threat-landscape",
+        "title": "The Threat Landscape of Exposed IoT Cameras",
+        "category": "Threat Intelligence",
+        "summary": "How millions of IP surveillance cameras become discoverable on the public internet, and the security implications.",
+        "content": """
+### Why IP Cameras Get Exposed
+
+Surveillance cameras and Network Video Recorders (NVRs) are often deployed with the intention of allowing owners to view live feeds remotely from smartphones or off-site computers. However, many deployments rely on flawed networking practices:
+
+1. **UPnP (Universal Plug and Play) IGD**: Many consumer routers ship with UPnP enabled by default. When an IP camera boots up, it broadcasts UPnP requests asking the router to map external ports (such as WAN:554 or WAN:8000) directly to the camera's internal LAN IP. This happens silently without user confirmation.
+2. **DMZ (Demilitarized Zone) Misconfigurations**: Untrained installers sometimes place the NVR or camera into the router's DMZ to bypass NAT or connectivity issues, opening all 65,535 TCP/UDP ports to the open internet.
+3. **Manual Port Forwarding**: Users manually forwarding port 554 (RTSP), 80/8080 (HTTP), or vendor SDK ports (e.g., 37777 for Dahua, 8000 for Hikvision) without restricting source IPs.
+
+### The Attack Vector: Mirai and IoT Botnets
+
+Exposed camera feeds are rarely just passive privacy risks—they frequently become nodes in malicious infrastructure:
+- **Credential Stuffing & Telnet Backdoors**: Attackers scan for exposed IoT devices using dictionaries of known factory default credentials (`admin:admin`, `admin:12345`, `root:vizxv`).
+- **Botnet Enlistment**: Malware families like **Mirai**, **Reaper**, and **Mozi** infect exposed cameras and use their compute and bandwidth to launch multi-terabit volumetric DDoS attacks or serve as proxy networks.
+- **RTSP Interception**: Unauthenticated RTSP streams (`rtsp://<ip>:554/live`) transmit unencrypted H.264/H.265 video frames directly over RTP/UDP, allowing anyone with an RTSP player to watch internal residential, commercial, or municipal facilities without authentication.
+        """,
+        "checklists": [
+            {
+                "id": "chk-upnp",
+                "title": "Disable UPnP on All Network Gateways",
+                "description": "Log into your router's administration portal and disable Universal Plug and Play (UPnP) globally to prevent devices from opening WAN ports automatically.",
+                "category": "Network",
+                "command_or_example": "Router Settings -> Advanced Network -> UPnP -> Set to Disabled",
+                "severity": "critical"
+            },
+            {
+                "id": "chk-ports",
+                "title": "Audit and Close Inbound WAN Port Forwards",
+                "description": "Never expose RTSP (554), ONVIF (8000/8080), or proprietary vendor ports directly to 0.0.0.0/0 on your firewall.",
+                "category": "Firewall",
+                "command_or_example": "iptables -A FORWARD -i eth0 -p tcp --dport 554 -j DROP",
+                "severity": "critical"
+            }
+        ]
+    },
+    {
+        "id": "hardening-guide",
+        "title": "Comprehensive IoT Camera Hardening Guide",
+        "category": "Defensive Security",
+        "summary": "Technical step-by-step remediation procedures to lock down IP cameras, isolate networks, and enable secure authentication.",
+        "content": """
+### 1. Robust Authentication & Password Hygiene
+- Immediately replace factory default passwords upon initial boot.
+- Enforce passwords with at least 16 characters including uppercase, lowercase, numbers, and symbols.
+- Ensure **RTSP Authentication** is switched from `None` or `Basic` to `Digest Authentication` (MD5/SHA-256 challenge-response) to prevent plaintext password sniffing.
+
+### 2. VLAN Network Segmentation
+Cameras should never reside on the same broadcast domain or subnet as corporate workstations, personal laptops, or file servers:
+- Create a dedicated **IoT / Camera VLAN** (e.g., VLAN 30, subnet `10.30.0.0/24`).
+- Configure firewall rules so that cameras on VLAN 30 can only communicate with the local NVR or streaming proxy (MediaMTX) and cannot initiate outbound connections to the internet or lateral LANs.
+
+### 3. Encrypted Remote Access (VPN vs Port Forwarding)
+Instead of exposing camera ports to the WAN:
+- Deploy **WireGuard**, **OpenVPN**, or **Tailscale** on your edge router or a local server.
+- Remote viewing clients must connect via the encrypted VPN tunnel before accessing the RTSP stream at `10.30.0.x:554`.
+        """,
+        "checklists": [
+            {
+                "id": "chk-pass",
+                "title": "Change Factory Default Credentials",
+                "description": "Replace manufacturer default credentials with strong random credentials generated by a password manager.",
+                "category": "Authentication",
+                "command_or_example": "pwgen -s 20 1",
+                "severity": "critical"
+            },
+            {
+                "id": "chk-vlan",
+                "title": "Isolate Cameras on an Untrusted VLAN",
+                "description": "Block all outbound internet access from the camera VLAN to prevent telemetry leakage or botnet C2 communication.",
+                "category": "Architecture",
+                "command_or_example": "ufw deny from 10.30.0.0/24 to any",
+                "severity": "high"
+            },
+            {
+                "id": "chk-vpn",
+                "title": "Use WireGuard/Tailscale for Remote Viewing",
+                "description": "Require mobile and desktop viewers to authenticate via WireGuard or Tailscale rather than port forwarding.",
+                "category": "Remote Access",
+                "command_or_example": "wg-quick up wg0",
+                "severity": "high"
+            },
+            {
+                "id": "chk-firmware",
+                "title": "Establish Firmware Update Schedules",
+                "description": "Regularly audit and apply vendor firmware patches to mitigate published CVEs in ONVIF and RTSP daemons.",
+                "category": "Patching",
+                "command_or_example": "Verify vendor security advisories quarterly",
+                "severity": "medium"
+            }
+        ]
+    },
+    {
+        "id": "legal-ethical",
+        "title": "Legal & Ethical Framework for Security Researchers",
+        "category": "Legal & Ethics",
+        "summary": "Understanding the boundaries of legal research, CFAA, Computer Misuse Act, and Coordinated Vulnerability Disclosure.",
+        "content": """
+### Understanding Legal Boundaries
+
+As a security practitioner or researcher studying exposed internet infrastructure:
+
+1. **Unauthorized Access Laws**:
+   - In the United States, the **Computer Fraud and Abuse Act (CFAA, 18 U.S.C. § 1030)** criminalizes intentionally accessing a protected computer without authorization or exceeding authorized access.
+   - In the UK, the **Computer Misuse Act 1990** criminalizes unauthorized access to computer material.
+   - In the European Union, the **GDPR** strictly governs the processing of personal data, which includes video feeds capturing identifiable individuals.
+
+2. **Ethical Security Research vs Voyeurism**:
+   - Indexing open ports via authorized OSINT platforms (like Shodan or Censys) is legal research into exposure trends.
+   - However, attempting to bypass passwords, brute-forcing credentials, or actively monitoring private living spaces or sensitive facilities constitutes unauthorized access and harassment.
+   - Always conduct active testing exclusively in sandbox environments, home labs, or networks where you possess explicit, written authorization.
+
+3. **Coordinated Vulnerability Disclosure (CVD)**:
+   - If you identify an exposed camera belonging to an organization, report the exposure directly to their designated security contact (`security@` or via their bug bounty / security.txt policy).
+   - Provide clear remediation instructions without exploiting the exposure.
+        """,
+        "checklists": [
+            {
+                "id": "chk-auth-only",
+                "title": "Only Test Authorized Systems",
+                "description": "Never attempt authentication or stream interception on networks without written authorization.",
+                "category": "Ethics",
+                "command_or_example": "Verify scope in security audit contracts",
+                "severity": "critical"
+            },
+            {
+                "id": "chk-cvd",
+                "title": "Follow Coordinated Vulnerability Disclosure",
+                "description": "Report exposed devices responsibly to system owners via RFC 9116 security.txt or cert teams.",
+                "category": "Disclosure",
+                "command_or_example": "Check https://<target-domain>/.well-known/security.txt",
+                "severity": "high"
+            }
+        ]
+    }
+]
+
+def get_education_articles() -> List[Dict[str, Any]]:
+    return EDUCATION_ARTICLES
+
+def get_checklist_items() -> List[Dict[str, Any]]:
+    items = []
+    for art in EDUCATION_ARTICLES:
+        items.extend(art.get("checklists", []))
+    return items

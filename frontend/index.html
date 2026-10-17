@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WorldCams // Exposed Camera Intelligence & Security Awareness</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Leaflet CSS & MarkerCluster -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="/css/styles.css">
+
+  <!-- Scripts -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+</head>
+<body class="dark-theme">
+  <!-- Top Navigation Bar -->
+  <header class="navbar">
+    <div class="nav-brand">
+      <div class="brand-radar">
+        <i data-lucide="cctv" class="brand-icon"></i>
+        <span class="radar-ping"></span>
+      </div>
+      <div>
+        <h1 class="brand-title">WORLD<span class="accent-text">CAMS</span></h1>
+        <p class="brand-subtitle">EXPOSED RTSP INTELLIGENCE &amp; HARDENING PLATFORM</p>
+      </div>
+    </div>
+
+    <!-- Live Metrics Counter -->
+    <div class="nav-metrics">
+      <div class="metric-card" id="metric-total">
+        <span class="metric-label">INDEXED CAMS</span>
+        <span class="metric-val" id="stat-total">--</span>
+      </div>
+      <div class="metric-card critical" id="metric-unauth">
+        <span class="metric-label">UNAUTHENTICATED</span>
+        <span class="metric-val" id="stat-unauth">--</span>
+      </div>
+      <div class="metric-card" id="metric-mtx">
+        <span class="metric-label">MEDIAMTX GATEWAY</span>
+        <span class="metric-badge" id="stat-mtx"><span class="status-dot"></span> Checking...</span>
+      </div>
+      <div class="metric-card" id="metric-shodan">
+        <span class="metric-label">RECON ENGINE</span>
+        <span class="metric-badge-blue" id="stat-shodan">SCRAPER (0 CREDITS)</span>
+      </div>
+      <div class="metric-card" id="metric-admin" style="cursor: pointer;" title="Administrator Access Status (Click to manage)">
+        <span class="metric-label">ADMIN PRIVILEGES</span>
+        <span class="metric-badge" id="stat-admin" style="color: var(--accent-rose); font-weight: 700;"><i data-lucide="lock" style="width: 11px; height: 11px; vertical-align: middle;"></i> LOCKED</span>
+      </div>
+    </div>
+
+    <!-- Quick Action Navigation -->
+    <div class="nav-actions">
+      <button class="btn btn-primary" id="btn-open-shodan">
+        <i data-lucide="radar"></i> Live Recon Scraper
+      </button>
+      <button class="btn btn-secondary" id="btn-open-education">
+        <i data-lucide="shield-alert"></i> Awareness &amp; Guides
+      </button>
+      <button class="btn btn-icon" id="btn-open-settings" title="Configuration &amp; Admin Settings">
+        <i data-lucide="settings"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Filter & Controls Toolbar -->
+  <section class="toolbar">
+    <div class="search-box">
+      <i data-lucide="search" class="search-icon"></i>
+      <input type="text" id="filter-search" placeholder="Search IP, organization, product, city, or banner text...">
+      <button id="btn-clear-search" class="btn-clear" title="Clear search">&times;</button>
+    </div>
+
+    <div class="filter-group">
+      <!-- Country Filter -->
+      <div class="select-wrapper">
+        <i data-lucide="globe" class="select-icon"></i>
+        <select id="filter-country">
+          <option value="">All Countries</option>
+        </select>
+      </div>
+
+      <!-- Org Filter -->
+      <div class="select-wrapper">
+        <i data-lucide="building" class="select-icon"></i>
+        <select id="filter-org">
+          <option value="">All Organizations</option>
+        </select>
+      </div>
+
+      <!-- Port Filter -->
+      <div class="select-wrapper">
+        <i data-lucide="network" class="select-icon"></i>
+        <select id="filter-port">
+          <option value="">All Ports</option>
+          <option value="554">Port 554 (RTSP)</option>
+          <option value="443">Port 443 (HTTPS Web)</option>
+          <option value="80">Port 80 (HTTP Web)</option>
+          <option value="8554">Port 8554 (Alt RTSP)</option>
+          <option value="8080">Port 8080 (Web RTSP)</option>
+          <option value="8000">Port 8000 (Hikvision)</option>
+          <option value="37777">Port 37777 (Dahua)</option>
+        </select>
+      </div>
+
+      <!-- Product Filter -->
+      <div class="select-wrapper">
+        <i data-lucide="box" class="select-icon"></i>
+        <select id="filter-product">
+          <option value="">All Products</option>
+        </select>
+      </div>
+
+      <!-- Risk Level -->
+      <div class="select-wrapper">
+        <i data-lucide="alert-triangle" class="select-icon"></i>
+        <select id="filter-risk">
+          <option value="">All Risk Levels</option>
+          <option value="critical">Critical (Unauth / Default)</option>
+          <option value="high">High (Exposed WAN)</option>
+          <option value="medium">Medium</option>
+          <option value="info">Verified Public / Info</option>
+        </select>
+      </div>
+
+      <button class="btn btn-outline" id="btn-reset-filters" title="Reset all filters">
+        <i data-lucide="rotate-ccw"></i> Reset
+      </button>
+    </div>
+
+    <!-- View Mode Switcher -->
+    <div class="view-toggle">
+      <button class="view-btn active" data-view="triage" title="3-Column SOC Triage View (Feeds + Map + Player)">
+        <i data-lucide="columns"></i>
+      </button>
+      <button class="view-btn" data-view="map" title="Map & Feeds View">
+        <i data-lucide="map"></i>
+      </button>
+      <button class="view-btn" data-view="player" title="Stream Inspector & Feeds">
+        <i data-lucide="video"></i>
+      </button>
+      <button class="view-btn" data-view="grid" title="Full Grid Cards View">
+        <i data-lucide="grid"></i>
+      </button>
+    </div>
+  </section>
+
+  <!-- ==========================================
+       Main Application 3-Panel Workspace
+       ========================================== -->
+  <main class="app-container view-triage" id="app-workspace">
+    <!-- PANEL 1: Dedicated Camera Feeds Browser Sidebar -->
+    <aside class="panel panel-feed-browser" id="feed-browser-panel">
+      <div class="feed-browser-header">
+        <div class="feed-header-title">
+          <i data-lucide="list" class="inline-icon"></i>
+          <h4>DISCOVERED CAMERAS</h4>
+        </div>
+        <span class="badge-count" id="feed-list-count">0</span>
+      </div>
+
+      <!-- Batch Management & Multi-Select Toolbar -->
+      <div class="feed-batch-bar" id="feed-batch-bar">
+        <label class="batch-select-all-label">
+          <input type="checkbox" id="batch-select-all">
+          <span>Select All</span>
+        </label>
+        <div class="batch-actions">
+          <span class="selected-count-badge" id="batch-selected-count" style="display: none;">0 selected</span>
+          <button class="btn btn-sm btn-danger" id="btn-batch-delete" style="display: none;" title="Delete selected cameras from database (Admin)">
+            <i data-lucide="trash-2"></i> Delete (<span id="batch-delete-num">0</span>)
+          </button>
+        </div>
+      </div>
+
+      <div class="feed-card-list" id="feed-grid">
+        <!-- Dynamically rendered camera cards -->
+      </div>
+    </aside>
+
+    <!-- PANEL 2: Global Interactive Threat Map -->
+    <section class="panel panel-map-container" id="map-panel">
+      <div class="map-controls">
+        <span class="map-status" id="map-counter">Showing 0 locations</span>
+        <button class="btn btn-sm btn-outline" id="btn-recenter-map">
+          <i data-lucide="crosshair"></i> Recenter
+        </button>
+      </div>
+      <div id="map-view"></div>
+    </section>
+
+    <!-- PANEL 3: Live Stream Player & Security Inspector -->
+    <aside class="panel panel-stream-inspector" id="stream-panel">
+      <div class="inspector-scroll-area">
+        <!-- Live Video Player Container -->
+        <div class="player-container">
+          <div class="player-header">
+            <div class="stream-title-group">
+              <span class="live-pill" id="player-status-badge"><span class="dot"></span> READY</span>
+              <h3 id="player-feed-title">Select a camera to view</h3>
+            </div>
+            <div class="player-controls-right">
+              <a class="btn-icon text-accent" id="btn-open-web-cam" target="_blank" rel="noopener noreferrer" title="Open Camera Web GUI in New Tab" style="display: none;">
+                <i data-lucide="external-link"></i>
+              </a>
+              <button class="btn-icon text-accent" id="btn-resolve-rtsp" title="Auto-probe vendor RTSP paths & profiles">
+                <i data-lucide="scan"></i>
+              </button>
+              <button class="btn-icon" id="btn-toggle-favorite" title="Bookmark camera">
+                <i data-lucide="bookmark"></i>
+              </button>
+              <button class="btn-icon text-danger" id="btn-delete-feed" title="Delete camera from database (Admin Only)">
+                <i data-lucide="trash-2"></i>
+              </button>
+              <button class="btn-icon" id="btn-fullscreen-player" title="Fullscreen">
+                <i data-lucide="maximize-2"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="video-wrapper" id="video-box">
+            <!-- Snapshot Preview (Instant Visual) -->
+            <img id="stream-snapshot" src="https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80" alt="Camera Preview">
+            <!-- MediaMTX Embedded WebRTC Frame -->
+            <iframe id="webrtc-frame" allow="autoplay; fullscreen" style="display: none; width: 100%; height: 100%; border: none; background: #000;"></iframe>
+            <!-- HTML5 Video element fallback -->
+            <video id="live-video" controls autoplay muted playsinline style="display: none;"></video>
+            <!-- Web Console Display Card & Embedded Preview -->
+            <div id="web-console-display" class="web-console-display" style="display: none;">
+              <div class="web-console-badge" id="web-console-badge"><i data-lucide="shield-check"></i> <span id="web-console-badge-text">ACTIVE WEB CONSOLE</span></div>
+              <div class="web-console-icon"><i data-lucide="monitor" class="icon-hero"></i></div>
+              <h4 class="web-console-title" id="web-console-title">Camera Web Management Interface</h4>
+              <p class="web-console-desc" id="web-console-desc">This device exposes an active web management console. Direct video feeds require web session authentication.</p>
+              <div class="web-console-actions">
+                <a id="btn-launch-console" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-primary">
+                  <i data-lucide="external-link"></i> Launch Web Console
+                </a>
+                <button type="button" id="btn-toggle-embed" class="btn btn-outline">
+                  <i data-lucide="eye"></i> Toggle Embedded View
+                </button>
+              </div>
+              <iframe id="web-console-frame" class="web-console-frame" sandbox="allow-forms allow-scripts allow-same-origin" style="display: none;"></iframe>
+            </div>
+            <!-- Non-blocking connection banner -->
+            <div class="video-overlay" id="video-overlay">
+              <div class="overlay-spinner"></div>
+              <p id="overlay-msg">Connecting to MediaMTX...</p>
+            </div>
+          </div>
+
+          <!-- Technical Metrics Bar -->
+          <div class="stream-tech-bar">
+            <div class="tech-item">
+              <span class="label">STREAM ENGINE</span>
+              <span class="value" id="tech-proto">MediaMTX (WebRTC/HLS)</span>
+            </div>
+            <div class="tech-item">
+              <span class="label">AUTH STATUS</span>
+              <span class="value text-warning" id="tech-auth">--</span>
+            </div>
+            <div class="tech-item">
+              <span class="label">EXPOSED PORT</span>
+              <span class="value" id="tech-port">--</span>
+            </div>
+            <div class="tech-item">
+              <span class="label">LOCATION</span>
+              <span class="value" id="tech-location">--</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Technical Security Inspector Tabs -->
+        <div class="stream-inspector">
+          <div class="inspector-tabs">
+            <button class="tab-btn active" data-tab="tab-details">Security Audit</button>
+            <button class="tab-btn" data-tab="tab-banner">Raw RTSP Banner</button>
+            <button class="tab-btn" data-tab="tab-remediation">Remediation Guide</button>
+          </div>
+
+          <div class="inspector-content">
+            <!-- Tab 1: Audit Info -->
+            <div class="tab-pane active" id="tab-details">
+              <div class="audit-grid">
+                <div class="audit-item">
+                  <span class="label">Target IP Address</span>
+                  <span class="val font-mono" id="audit-ip">--</span>
+                </div>
+                <div class="audit-item">
+                  <span class="label">Detected Product</span>
+                  <span class="val" id="audit-product">--</span>
+                </div>
+                <div class="audit-item">
+                  <span class="label">Organization / ISP</span>
+                  <span class="val" id="audit-org">--</span>
+                </div>
+                <div class="audit-item">
+                  <span class="label">ASN</span>
+                  <span class="val font-mono" id="audit-asn">--</span>
+                </div>
+                <div class="audit-item col-span-2">
+                  <span class="label">RTSP Source Path</span>
+                  <span class="val font-mono text-break" id="audit-rtsp">--</span>
+                </div>
+                <div class="audit-item col-span-2">
+                  <span class="label">MediaMTX Path</span>
+                  <span class="val font-mono" id="audit-path">--</span>
+                </div>
+                <div class="audit-item col-span-2" style="margin-top: 4px;">
+                  <button class="btn btn-sm btn-outline" id="btn-probe-vendor" style="width: 100%; justify-content: center; gap: 6px; font-weight: 600; border-color: rgba(59, 130, 246, 0.4);">
+                    <i data-lucide="scan"></i> Auto-Probe Vendor RTSP Profiles & Subpaths
+                  </button>
+                </div>
+              </div>
+              <div class="audit-notes" id="audit-notes-box">
+                <span class="label">Exposure Risk Assessment</span>
+                <p id="audit-notes-text">Select a camera from the browser list or map to view technical telemetry.</p>
+              </div>
+            </div>
+
+            <!-- Tab 2: Banner -->
+            <div class="tab-pane" id="tab-banner">
+              <pre class="code-block" id="audit-banner">No banner data selected.</pre>
+            </div>
+
+            <!-- Tab 3: Remediation -->
+            <div class="tab-pane" id="tab-remediation">
+              <div class="remediation-box">
+                <h4><i data-lucide="shield-alert" class="inline-icon"></i> Recommended Mitigations for this Exposure</h4>
+                <ul class="remediation-steps">
+                  <li><strong>Disable UPnP</strong>: Turn off UPnP IGD on router to prevent automated port forwards.</li>
+                  <li><strong>Enable RTSP Digest Authentication</strong>: Do not allow unauthenticated anonymous stream access.</li>
+                  <li><strong>Segment onto Isolated VLAN</strong>: Relocate surveillance devices away from internal LAN.</li>
+                  <li><strong>Use Encrypted WireGuard/Tailscale VPN</strong>: Replace dangerous WAN port 554 forwards with VPN tunnels.</li>
+                </ul>
+                <button class="btn btn-sm btn-primary" id="btn-jump-education">
+                  <i data-lucide="book-open"></i> Open Comprehensive Hardening Checklist
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ==========================================
+       MODAL 1: Shodan Scanner & Query Modal
+       ========================================== -->
+  <div class="modal-backdrop" id="modal-shodan">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i data-lucide="search" class="modal-icon"></i>
+          <div>
+            <h3>Shodan Camera Search Engine</h3>
+            <p>Query global Internet of Things exposure data directly from Shodan API</p>
+          </div>
+        </div>
+        <button class="btn-close" data-modal="modal-shodan">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Common OSINT Camera Queries (Click to load):</label>
+          <div class="quick-tags">
+            <span class="tag-pill" data-query="port:554 has_screenshot:true">port:554 has_screenshot:true</span>
+            <span class="tag-pill" data-query='product:"Hikvision" port:554'>product:"Hikvision" port:554</span>
+            <span class="tag-pill" data-query='product:"Dahua" port:554'>product:"Dahua" port:554</span>
+            <span class="tag-pill" data-query='product:"Axis" has_screenshot:true'>product:"Axis" has_screenshot:true</span>
+            <span class="tag-pill" data-query='tag:camera "Server: RTSP"'>tag:camera "Server: RTSP"</span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="shodan-query-input">Shodan Query String</label>
+          <input type="text" id="shodan-query-input" class="form-control font-mono" value="port:554 has_screenshot:true">
+        </div>
+
+        <div class="form-row">
+          <div class="form-group col">
+            <label for="shodan-mode">Recon Engine Mode</label>
+            <select id="shodan-mode" class="form-control">
+              <option value="scraper" selected>Live Web Recon Scraper (Zero Credits)</option>
+              <option value="api">Paid Shodan API (Requires Key &amp; Credits)</option>
+            </select>
+          </div>
+          <div class="form-group col">
+            <label for="shodan-limit">Results Limit</label>
+            <select id="shodan-limit" class="form-control">
+              <option value="20">20 results</option>
+              <option value="100">100 results (1 page)</option>
+              <option value="500">500 results (5 pages)</option>
+              <option value="1000">1,000 results (10 pages)</option>
+              <option value="2500">2,500 results (25 pages)</option>
+              <option value="5000">5,000 results (50 pages)</option>
+              <option value="8000" selected>8,000 results (80 pages - Shodan Target)</option>
+              <option value="10000">10,000 results (Maximum limit)</option>
+              <option value="custom">Custom count...</option>
+            </select>
+            <input type="number" id="shodan-custom-limit" class="form-control font-mono" style="display:none; margin-top: 0.5rem;" min="1" max="10000" placeholder="Enter custom amount (e.g. 8000)">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-container">
+            <input type="checkbox" id="shodan-import-db" checked>
+            <span class="checkmark"></span>
+            Auto-import discovered feeds into SQLite Database
+          </label>
+        </div>
+
+        <div id="shodan-status-msg" class="alert-box" style="display: none;"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-modal="modal-shodan">Cancel</button>
+        <button class="btn btn-primary" id="btn-execute-shodan">
+          <i data-lucide="radar"></i> Execute Search
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==========================================
+       MODAL 2: Security Awareness & Hardening Hub
+       ========================================== -->
+  <div class="modal-backdrop" id="modal-education">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i data-lucide="shield-check" class="modal-icon text-accent"></i>
+          <div>
+            <h3>Security Awareness &amp; Remediation Hub</h3>
+            <p>Educational frameworks, threat modeling, and step-by-step camera hardening guides</p>
+          </div>
+        </div>
+        <button class="btn-close" data-modal="modal-education">&times;</button>
+      </div>
+
+      <div class="modal-body-split">
+        <aside class="education-nav" id="education-articles-list">
+          <!-- Populated by JS -->
+        </aside>
+        <article class="education-content" id="education-article-body">
+          <!-- Markdown content rendered here -->
+        </article>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-modal="modal-education">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==========================================
+       MODAL 3: Settings Modal
+       ========================================== -->
+  <div class="modal-backdrop" id="modal-settings">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i data-lucide="sliders" class="modal-icon"></i>
+          <div>
+            <h3>System Settings &amp; API Keys</h3>
+            <p>Configure Shodan API credentials and MediaMTX stream endpoints</p>
+          </div>
+        </div>
+        <button class="btn-close" data-modal="modal-settings">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="setting-shodan-key">Shodan API Key</label>
+          <input type="password" id="setting-shodan-key" class="form-control font-mono" placeholder="Enter your Shodan API key...">
+          <small class="form-hint">Optional. If query credits are depleted or key is omitted, WorldCams automatically uses the Zero-Credit Live Scraper.</small>
+        </div>
+
+        <div class="shodan-account-box" id="settings-shodan-account">
+          <div class="account-row">
+            <span>API Key Status:</span>
+            <strong id="account-status">Checking...</strong>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 1.5rem; border-top: 1px solid var(--border-subtle); padding-top: 1.2rem;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+            <label for="setting-admin-token" style="margin-bottom: 0;"><i data-lucide="shield-check" class="inline-icon" style="color: var(--accent-rose);"></i> Administrator Access Key</label>
+            <span class="badge" id="admin-status-badge" style="background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.3);">LOCKED</span>
+          </div>
+          <input type="password" id="setting-admin-token" class="form-control font-mono" placeholder="Enter Admin Access Token">
+          <small class="form-hint">Required for administrative privileges, such as permanently deleting camera feeds, updating API keys, and camera discovery.</small>
+        </div>
+
+        <div class="form-group" style="margin-top: 1.5rem;">
+          <label>MediaMTX Transcoding Endpoints</label>
+          <div class="endpoint-item">
+            <span class="badge">WebRTC (WHEP)</span>
+            <code id="conf-whep">http://localhost:8889</code>
+          </div>
+          <div class="endpoint-item">
+            <span class="badge">HLS Stream</span>
+            <code id="conf-hls">http://localhost:8888</code>
+          </div>
+          <div class="endpoint-item">
+            <span class="badge">Control API</span>
+            <code id="conf-api">http://localhost:9997</code>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-modal="modal-settings">Cancel</button>
+        <button class="btn btn-primary" id="btn-save-settings">
+          <i data-lucide="save"></i> Save Key
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Application Logic Modules (Cache-busting version) -->
+  <script src="/js/player.js?v=8295"></script>
+  <script src="/js/map.js?v=8295"></script>
+  <script src="/js/education.js?v=8295"></script>
+  <script src="/js/app.js?v=8295"></script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+# ==========================================
+# MediaMTX Configuration for WorldCams
+# RTSP-to-WebRTC / HLS Streaming Gateway
+# ==========================================
+
+logLevel: info
+logDestinations: [stdout]
+
+# ------------------------------------------
+# Control API (Used by FastAPI backend)
+# ------------------------------------------
+api: true
+apiAddress: :9997
+
+# ------------------------------------------
+# RTSP Server
+# ------------------------------------------
+rtsp: true
+rtspAddress: :8554
+rtspTransports: [tcp, udp]
+
+# ------------------------------------------
+# HLS (HTTP Live Streaming)
+# ------------------------------------------
+hls: true
+hlsAddress: :8888
+hlsAllowOrigins: ["*"]
+hlsAlwaysRemux: false
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+
+# ------------------------------------------
+# WebRTC (Ultra Low Latency WHEP)
+# ------------------------------------------
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+
+# ------------------------------------------
+# Stream Paths & Sources
+# ------------------------------------------
+paths:
+  # On-demand CCTV generator for simulated/lab feeds
+  all_others:
+    runOnDemand: ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=15 -vf "drawtext=text='[EXPOSED RTSP CCTV] %{localtime\:%Y-%m-%d %H\\\\\:%M\\\\\:%S}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.6:x=20:y=20" -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -rtsp_transport tcp -f rtsp rtsp://127.0.0.1:8554/$MTX_PATH
+    runOnDemandCloseAfter: 10s
+    runOnDemandStartTimeout: 10s

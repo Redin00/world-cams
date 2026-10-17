@@ -1,0 +1,17 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.local
+bin/
+*.crt
+*.key
+mediamtx.log
+.DS_Store
