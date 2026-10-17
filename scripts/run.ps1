@@ -48,6 +48,10 @@ if (Test-Path "$ProjectRoot\.env") {
     Get-Content "$ProjectRoot\.env" | ForEach-Object {
         if ($_ -match '^\s*APP_PORT\s*=\s*(.+)$') { $AppPort = $matches[1].Trim('"'' ') }
         if ($_ -match '^\s*APP_HOST\s*=\s*(.+)$') { $AppHost = $matches[1].Trim('"'' ') }
+        if ($_ -match '^\s*MEDIAMTX_PUBLIC_HOST\s*=\s*(.+)$') {
+            $env:MTX_WEBRTCADDITIONALHOSTS = $matches[1].Trim('"'' ')
+            Write-Host "[*] Configured WebRTC Additional Host: $($env:MTX_WEBRTCADDITIONALHOSTS)" -ForegroundColor Yellow
+        }
     }
 }
 
@@ -55,7 +59,8 @@ if ($Port -ne "") {
     $AppPort = $Port
 }
 
-$DisplayHost = if ($AppHost -eq "0.0.0.0") { "localhost" } else { $AppHost }
+$BindHost = if ($AppHost -eq "127.0.0.1" -or $AppHost -eq "localhost") { $AppHost } else { "0.0.0.0" }
+$DisplayHost = if ($env:MTX_WEBRTCADDITIONALHOSTS) { $env:MTX_WEBRTCADDITIONALHOSTS } elseif ($AppHost -eq "0.0.0.0") { "localhost" } else { $AppHost }
 
 # 5. Start MediaMTX
 Write-Host "[*] Starting MediaMTX streaming gateway..." -ForegroundColor Green

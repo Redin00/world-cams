@@ -55,10 +55,10 @@ class MediaMTXService:
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
             }
-            if is_win:
-                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            else:
-                popen_kwargs["preexec_fn"] = os.setsid
+            env = os.environ.copy()
+            if settings.MEDIAMTX_PUBLIC_HOST:
+                env["MTX_WEBRTCADDITIONALHOSTS"] = settings.MEDIAMTX_PUBLIC_HOST
+            popen_kwargs["env"] = env
 
             self.process = subprocess.Popen(
                 [str(bin_path), str(conf_path)],
