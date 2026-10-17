@@ -21,12 +21,18 @@ fi
 ARCH=$(uname -m)
 case "$ARCH" in
     x86_64) MTX_ARCH="amd64" ;;
-    aarch64|arm64) MTX_ARCH="arm64v8" ;;
-    armv7l) MTX_ARCH="armv7" ;;
+    aarch64|arm64) MTX_ARCH="arm64" ;;
+    armv7l|armv7) MTX_ARCH="armv7" ;;
+    armv6l|armv6) MTX_ARCH="armv6" ;;
     *) echo "[ERROR] Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
-OS="linux"
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$OS" in
+    linux) OS="linux" ;;
+    darwin) OS="darwin" ;;
+    *) echo "[ERROR] Unsupported OS: $OS"; exit 1 ;;
+esac
 URL="https://github.com/bluenviron/mediamtx/releases/download/${VERSION}/mediamtx_${VERSION}_${OS}_${MTX_ARCH}.tar.gz"
 
 # Remove any previous broken / empty download
