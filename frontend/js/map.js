@@ -117,7 +117,7 @@ class WorldMap {
         });
 
         marker.on('click', () => {
-          if (this.onSelectFeedCallback) {
+          if (this.onSelectFeedCallback && window.innerWidth > 900) {
             this.onSelectFeedCallback(feed);
           }
         });

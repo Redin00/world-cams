@@ -112,6 +112,15 @@ class StreamPlayer {
         if (this.snapshotEl) this.snapshotEl.style.display = 'block';
       }
     }
+
+    const liveDot = document.getElementById('mobile-live-indicator');
+    if (liveDot) {
+      if (state.startsWith('LIVE') || state.startsWith('ACTIVE WEB') || state.startsWith('SNAPSHOT')) {
+        liveDot.classList.add('live');
+      } else if (state.includes('OFFLINE') || state.includes('BLOCKED')) {
+        liveDot.classList.remove('live');
+      }
+    }
   }
 
   showWebConsole(feed, message, effectiveUrl = null) {
@@ -219,6 +228,9 @@ class StreamPlayer {
         keepalive: true
       }).catch(() => {});
     }
+
+    const liveDot = document.getElementById('mobile-live-indicator');
+    if (liveDot) liveDot.classList.remove('live');
   }
 
   async playHttpStream(feed, customUrl) {

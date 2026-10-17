@@ -60,6 +60,16 @@ class AppController {
 
     // Workspace
     this.workspace = document.getElementById('app-workspace');
+
+    // Mobile Navigation & Controls
+    this.btnToggleFiltersMobile = document.getElementById('btn-toggle-filters-mobile');
+    this.filterGroup = document.querySelector('.filter-group');
+    this.filterBadgeDot = document.getElementById('filter-badge-dot');
+    this.mobileNavBar = document.getElementById('mobile-nav-bar');
+    this.btnMobileBack = document.getElementById('btn-mobile-back-to-feeds');
+    this.mobileQuickCamName = document.getElementById('mobile-quick-cam-name');
+    this.mobileLiveIndicator = document.getElementById('mobile-live-indicator');
+    this.currentMobileTab = 'feeds';
   }
 
   initEventListeners() {
@@ -231,6 +241,33 @@ class AppController {
       this.executeBatchDelete();
     });
 
+    // Mobile Bottom App Navigation
+    document.querySelectorAll('.mobile-nav-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
+        if (tab === 'recon') {
+          this.requireAdmin(() => {
+            this.openModal('modal-shodan');
+          });
+          return;
+        }
+        this.switchMobileTab(tab);
+      });
+    });
+
+    // Mobile Collapsible Filter Drawer Toggle
+    this.btnToggleFiltersMobile?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!this.filterGroup) return;
+      const isOpen = this.filterGroup.classList.toggle('mobile-open');
+      this.btnToggleFiltersMobile.classList.toggle('active', isOpen);
+    });
+
+    // Mobile Player "Elenco Cam" Back Button
+    this.btnMobileBack?.addEventListener('click', () => {
+      this.switchMobileTab('feeds');
+    });
+
     // Connect map select handler
     if (window.worldMap) {
       window.worldMap.setSelectHandler((feed) => {
@@ -240,6 +277,7 @@ class AppController {
   }
 
   async init() {
+    this.switchMobileTab('feeds');
     this.setViewMode('triage');
     await this.checkAdminStatus();
     await this.checkHealth();
@@ -249,10 +287,43 @@ class AppController {
   }
 
   setViewMode(mode) {
-    this.workspace.className = `app-container view-${mode}`;
+    this.currentViewMode = mode;
+    const mobileClass = `mobile-tab-${this.currentMobileTab || 'feeds'}`;
+    this.workspace.className = `app-container view-${mode} ${mobileClass}`;
     if (window.worldMap) {
       window.worldMap.invalidateSize();
     }
+  }
+
+  switchMobileTab(tab) {
+    this.currentMobileTab = tab;
+    document.querySelectorAll('.mobile-nav-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    if (this.workspace) {
+      this.workspace.classList.remove('mobile-tab-feeds', 'mobile-tab-player', 'mobile-tab-map');
+      this.workspace.classList.add(`mobile-tab-${tab}`);
+    }
+    if (tab === 'map' && window.worldMap) {
+      window.worldMap.invalidateSize();
+    }
+    // Close mobile filter drawer if open
+    if (this.filterGroup && this.filterGroup.classList.contains('mobile-open')) {
+      this.filterGroup.classList.remove('mobile-open');
+      this.btnToggleFiltersMobile?.classList.remove('active');
+    }
+  }
+
+  updateFilterBadgeDot() {
+    if (!this.filterBadgeDot) return;
+    const hasFilter = !!(
+      this.currentFilters.country ||
+      this.currentFilters.org ||
+      this.currentFilters.port ||
+      this.currentFilters.product ||
+      this.currentFilters.risk_level
+    );
+    this.filterBadgeDot.style.display = hasFilter ? 'block' : 'none';
   }
 
   // ==========================================
@@ -468,10 +539,12 @@ class AppController {
         // Render Feed Grid
         this.renderFeedGrid();
 
-        // If no feed is currently selected, auto-select the first feed
+        // If no feed is currently selected, auto-select the first feed (without forcing tab switch on mobile)
         if (!this.selectedFeed && this.feeds.length > 0) {
-          this.selectFeed(this.feeds[0]);
+          this.selectFeed(this.feeds[0], false);
         }
+
+        this.updateFilterBadgeDot();
       }
     } catch (err) {
       console.error('Failed to load feeds:', err);
@@ -626,7 +699,7 @@ class AppController {
     lucide.createIcons();
   }
 
-  selectFeed(feed) {
+  selectFeed(feed, autoSwitchMobile = true) {
     this.selectedFeed = feed;
 
     // Update active state in grid cards
@@ -638,12 +711,16 @@ class AppController {
       window.streamPlayer.playFeed(feed);
     }
 
-    // On mobile devices, smoothly scroll to video player
-    if (window.innerWidth <= 900) {
-      const inspectorEl = document.querySelector('.panel-stream-inspector');
-      if (inspectorEl) {
-        inspectorEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
+    // On mobile devices, automatically switch to Player tab if user selected a cam
+    if (window.innerWidth <= 900 && autoSwitchMobile) {
+      this.switchMobileTab('player');
+    }
+
+    if (this.mobileQuickCamName) {
+      this.mobileQuickCamName.textContent = `${feed.product || 'Camera'} [${feed.ip}]`;
+    }
+    if (this.mobileLiveIndicator) {
+      this.mobileLiveIndicator.classList.add('live');
     }
 
     // Update favorite button state
@@ -898,6 +975,7 @@ class AppController {
     };
 
     this.loadFeeds();
+    this.updateFilterBadgeDot();
     if (window.worldMap) {
       window.worldMap.recenter();
     }

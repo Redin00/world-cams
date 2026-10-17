@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/css/styles.css">
+  <link rel="stylesheet" href="/css/styles.css?v=8300">
 
   <!-- Scripts -->
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -82,6 +82,10 @@
       <i data-lucide="search" class="search-icon"></i>
       <input type="text" id="filter-search" placeholder="Search IP, organization, product, city, or banner text...">
       <button id="btn-clear-search" class="btn-clear" title="Clear search">&times;</button>
+      <button type="button" id="btn-toggle-filters-mobile" class="btn-mobile-filter" title="Filtri">
+        <i data-lucide="sliders-horizontal"></i>
+        <span class="filter-badge-dot" id="filter-badge-dot"></span>
+      </button>
     </div>
 
     <div class="filter-group">
@@ -204,6 +208,14 @@
 
     <!-- PANEL 3: Live Stream Player & Security Inspector -->
     <aside class="panel panel-stream-inspector" id="stream-panel">
+      <!-- Mobile Quick Return Bar -->
+      <div class="mobile-player-topbar" id="mobile-player-topbar">
+        <button type="button" class="btn btn-sm btn-outline" id="btn-mobile-back-to-feeds">
+          <i data-lucide="arrow-left"></i> Elenco Cam
+        </button>
+        <span class="mobile-quick-cam-name" id="mobile-quick-cam-name">Live Stream</span>
+      </div>
+
       <div class="inspector-scroll-area">
         <!-- Live Video Player Container -->
         <div class="player-container">
@@ -529,10 +541,33 @@
     </div>
   </div>
 
+  <!-- Mobile Bottom App Navigation Bar -->
+  <nav class="mobile-nav-bar" id="mobile-nav-bar">
+    <button type="button" class="mobile-nav-btn active" data-tab="feeds">
+      <i data-lucide="layout-list"></i>
+      <span>Telecamere</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-tab="player">
+      <div class="mobile-nav-icon-wrap">
+        <i data-lucide="tv"></i>
+        <span class="mobile-nav-live-indicator" id="mobile-live-indicator"></span>
+      </div>
+      <span>Player</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-tab="map">
+      <i data-lucide="map-pin"></i>
+      <span>Mappa</span>
+    </button>
+    <button type="button" class="mobile-nav-btn" data-tab="recon">
+      <i data-lucide="radar"></i>
+      <span>Recon</span>
+    </button>
+  </nav>
+
   <!-- Application Logic Modules (Cache-busting version) -->
-  <script src="/js/player.js?v=8295"></script>
-  <script src="/js/map.js?v=8295"></script>
-  <script src="/js/education.js?v=8295"></script>
-  <script src="/js/app.js?v=8295"></script>
+  <script src="/js/player.js?v=8300"></script>
+  <script src="/js/map.js?v=8300"></script>
+  <script src="/js/education.js?v=8300"></script>
+  <script src="/js/app.js?v=8300"></script>
 </body>
 </html>

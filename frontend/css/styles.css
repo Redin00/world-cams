@@ -340,6 +340,19 @@ body.dark-theme {
   display: none;
 }
 
+/* Mobile-only app components (hidden on desktop) */
+.btn-mobile-filter {
+  display: none;
+}
+
+.mobile-player-topbar {
+  display: none;
+}
+
+.mobile-nav-bar {
+  display: none;
+}
+
 .filter-group {
   display: flex;
   align-items: center;
@@ -1577,22 +1590,28 @@ body.dark-theme {
 }
 
 /* Mobile Devices & Small Tablets (<= 900px) */
+/* ==========================================================================
+   Mobile-First App Layout & Responsive System (<= 900px)
+   ========================================================================== */
 @media (max-width: 900px) {
-  /* Prevent full-page drift so header and search NEVER scroll away */
+  /* Lock viewport so headers & navigation bar are permanently stable */
   html, body {
     height: 100%;
     height: 100dvh;
     overflow: hidden;
+    margin: 0;
+    padding: 0;
   }
 
-  /* Navigation Bar: Pinned at top */
+  /* Compact Sleek Top Navbar */
   .navbar {
     flex-shrink: 0;
-    flex-direction: column;
-    align-items: stretch;
-    padding: 0.4rem 0.75rem;
-    gap: 0.35rem;
-    height: auto;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    height: 48px;
+    padding: 0 0.75rem;
+    gap: 0.5rem;
     background-color: var(--bg-secondary);
     border-bottom: 1px solid var(--border-subtle);
     z-index: 100;
@@ -1600,105 +1619,208 @@ body.dark-theme {
 
   .nav-brand {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    width: 100%;
+    gap: 0.45rem;
+    width: auto;
   }
 
-  .nav-metrics {
-    display: flex;
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    padding-bottom: 0.15rem;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    gap: 0.35rem;
+  .brand-radar {
+    width: 26px;
+    height: 26px;
   }
-  .nav-metrics::-webkit-scrollbar {
+
+  .brand-radar .brand-icon {
+    width: 14px;
+    height: 14px;
+  }
+
+  .brand-title {
+    font-size: 0.95rem;
+    letter-spacing: 0.05em;
+  }
+
+  .brand-subtitle {
     display: none;
   }
-  .metric-card {
-    flex: 0 0 auto;
-    min-width: 95px;
-    padding: 0.2rem 0.45rem;
-  }
-  .metric-label {
-    font-size: 0.52rem;
-  }
-  .metric-val {
-    font-size: 0.78rem;
+
+  /* Hide bulky horizontal metrics on phones */
+  .nav-metrics {
+    display: none !important;
   }
 
+  /* Compact Header Action Buttons */
   .nav-actions {
     display: flex;
-    justify-content: space-between;
-    width: 100%;
+    align-items: center;
     gap: 0.35rem;
-  }
-  .nav-actions .btn {
-    flex: 1;
-    justify-content: center;
-    font-size: 0.7rem;
-    padding: 0.35rem 0.45rem;
+    width: auto;
   }
 
-  /* Pinned Toolbar & Search: ALWAYS visible, never scrolls away */
+  .nav-actions #btn-open-shodan {
+    display: none !important; /* Recon has dedicated bottom tab */
+  }
+
+  .nav-actions #btn-open-education {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    font-size: 0; /* Hides text label, keeps shield icon */
+    border-radius: var(--radius-sm);
+  }
+
+  .nav-actions #btn-open-education i {
+    margin: 0;
+    width: 16px;
+    height: 16px;
+  }
+
+  .nav-actions #btn-open-settings {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+  }
+
+  .nav-actions #btn-open-settings i {
+    margin: 0;
+    width: 16px;
+    height: 16px;
+  }
+
+  /* Toolbar: Search input + collapsible filter drawer */
   .toolbar {
     flex-shrink: 0;
     position: relative;
-    top: auto;
-    z-index: 90;
-    flex-direction: column;
-    align-items: stretch;
-    padding: 0.45rem 0.75rem;
-    gap: 0.4rem;
+    padding: 0.4rem 0.75rem;
     background: var(--bg-primary);
     border-bottom: 1px solid var(--border-subtle);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
   }
 
   .search-box {
-    max-width: 100%;
-    width: 100%;
+    display: flex;
+    align-items: center;
     position: relative;
+    width: 100%;
+    max-width: 100%;
   }
 
   .search-box input {
     width: 100%;
-    height: 40px;
-    font-size: 16px !important; /* Prevents iOS Safari auto-zoom */
-    padding: 0.4rem 2.2rem 0.4rem 2.4rem;
+    height: 38px;
+    font-size: 15px !important; /* Prevents auto-zoom on iOS Safari */
+    padding: 0.4rem 4.8rem 0.4rem 2.3rem;
     background: var(--bg-surface);
-    border: 1px solid rgba(6, 182, 212, 0.35);
+    border: 1px solid rgba(6, 182, 212, 0.3);
     border-radius: var(--radius-sm);
-    box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.3);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
   }
 
   .search-box input:focus {
     border-color: var(--accent-cyan);
-    box-shadow: 0 0 10px rgba(6, 182, 212, 0.35);
+    box-shadow: 0 0 10px rgba(6, 182, 212, 0.25);
   }
 
   .search-icon {
-    width: 15px;
-    height: 15px;
-    left: 10px;
+    width: 14px;
+    height: 14px;
+    left: 9px;
     color: var(--accent-cyan);
   }
 
   .btn-clear {
-    width: 32px;
-    height: 32px;
-    right: 4px;
-    font-size: 1.2rem;
+    position: absolute;
+    right: 42px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    font-size: 1.1rem;
+    display: none;
+    align-items: center;
+    justify-content: center;
     color: var(--text-muted);
   }
 
+  .btn-mobile-filter {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 30px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-mobile-filter i {
+    width: 15px;
+    height: 15px;
+  }
+
+  .btn-mobile-filter.active {
+    color: var(--accent-cyan);
+    border-color: var(--accent-cyan);
+    background: rgba(6, 182, 212, 0.15);
+  }
+
+  .filter-badge-dot {
+    display: none;
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
+    background: var(--accent-cyan);
+    border-radius: 50%;
+    box-shadow: 0 0 6px var(--accent-cyan);
+  }
+
+  /* Desktop View Mode switcher hidden on mobile */
+  .view-toggle {
+    display: none !important;
+  }
+
+  /* Collapsible Filters Drawer on Mobile */
   .filter-group {
-    display: grid;
+    display: none;
+  }
+
+  .filter-group.mobile-open {
+    display: grid !important;
     grid-template-columns: repeat(2, 1fr);
     gap: 0.35rem;
-    width: 100%;
+    margin-top: 0.45rem;
+    padding-top: 0.45rem;
+    border-top: 1px dashed var(--border-subtle);
+    animation: mobileFilterSlide 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  @keyframes mobileFilterSlide {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .select-wrapper {
@@ -1709,25 +1831,17 @@ body.dark-theme {
     width: 100%;
     min-width: 0;
     height: 34px;
-    font-size: 0.74rem;
+    font-size: 0.72rem;
   }
 
   #btn-reset-filters {
     grid-column: span 2;
     justify-content: center;
     height: 34px;
+    font-size: 0.75rem;
   }
 
-  .view-toggle {
-    width: 100%;
-    justify-content: space-around;
-  }
-  .view-btn {
-    flex: 1;
-    height: 30px;
-  }
-
-  /* Scrollable Workspace: Sits cleanly BELOW pinned header (Player never covered!) */
+  /* Main Workspace: Fills remaining height above bottom nav bar */
   .app-container,
   .app-container.view-triage,
   .app-container.view-map,
@@ -1735,104 +1849,229 @@ body.dark-theme {
   .app-container.view-grid {
     flex: 1 1 0%;
     min-height: 0;
-    height: 100%;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    flex-direction: column;
+    height: calc(100% - 94px);
     width: 100%;
     position: relative;
+    overflow: hidden;
+    padding-bottom: 56px; /* space for fixed bottom navigation bar */
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
   }
 
-  /* In default Triage Mode on mobile: Player top, Map middle, Feeds bottom */
-  .app-container.view-triage .panel-stream-inspector {
-    display: flex;
-    order: 1;
+  /* Tab 1: Feeds (Active by default or when mobile-tab-feeds is present) */
+  .app-container:not(.mobile-tab-player):not(.mobile-tab-map) .panel-feed-browser,
+  .app-container.mobile-tab-feeds .panel-feed-browser {
+    display: flex !important;
     width: 100% !important;
     max-width: 100% !important;
     min-width: 0 !important;
+    height: 100% !important;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    border-right: none;
     border-left: none;
+  }
+
+  .app-container:not(.mobile-tab-player):not(.mobile-tab-map) .panel-stream-inspector,
+  .app-container:not(.mobile-tab-player):not(.mobile-tab-map) .panel-map-container,
+  .app-container.mobile-tab-feeds .panel-stream-inspector,
+  .app-container.mobile-tab-feeds .panel-map-container {
+    display: none !important;
+  }
+
+  /* Tab 2: Player & Inspection */
+  .app-container.mobile-tab-player .panel-stream-inspector {
+    display: flex !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: 100% !important;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    border-left: none;
+    border-right: none;
+  }
+
+  .app-container.mobile-tab-player .panel-feed-browser,
+  .app-container.mobile-tab-player .panel-map-container {
+    display: none !important;
+  }
+
+  /* Tab 3: Interactive Map */
+  .app-container.mobile-tab-map .panel-map-container {
+    display: flex !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: 100% !important;
+    flex: 1 1 auto;
+  }
+
+  .app-container.mobile-tab-map #map-view {
+    width: 100%;
+    height: 100%;
+  }
+
+  .app-container.mobile-tab-map .panel-feed-browser,
+  .app-container.mobile-tab-map .panel-stream-inspector {
+    display: none !important;
+  }
+
+  /* Feed List Styling on Mobile */
+  .feed-browser-header {
+    padding: 0.45rem 0.75rem;
+  }
+
+  .feed-batch-bar {
+    padding: 0.35rem 0.65rem;
+    font-size: 0.72rem;
+  }
+
+  .feed-card-list {
+    overflow-y: auto !important;
+    height: 100% !important;
+    padding: 0.5rem;
+    padding-bottom: 2.5rem;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .feed-card {
+    min-height: 78px;
+    margin-bottom: 0.4rem;
+  }
+
+  /* Mobile Player Topbar & Inspector Elements */
+  .mobile-player-topbar {
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.65rem;
+    background: var(--bg-surface);
     border-bottom: 1px solid var(--border-subtle);
     flex-shrink: 0;
   }
 
-  .app-container.view-triage .panel-map-container {
-    display: flex;
-    order: 2;
-    width: 100% !important;
-    height: 280px !important;
-    min-height: 250px !important;
-    flex-shrink: 0;
+  .mobile-player-topbar .btn {
+    font-size: 0.72rem;
+    padding: 0.25rem 0.55rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
   }
 
-  .app-container.view-triage .panel-feed-browser {
-    display: flex;
-    order: 3;
-    width: 100% !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-    border-right: none;
-    height: auto !important;
-    flex-shrink: 0;
+  .mobile-quick-cam-name {
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    color: var(--accent-cyan);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 190px;
   }
 
-  .feed-card-list {
-    overflow-y: visible !important;
-    height: auto !important;
+  .player-container {
     padding: 0.5rem;
   }
 
-  /* Map Focus Mode on Mobile */
-  .app-container.view-map .panel-map-container {
-    display: flex;
-    width: 100% !important;
-    height: 50vh !important;
-  }
-  .app-container.view-map .panel-feed-browser {
-    display: flex;
-    width: 100% !important;
-  }
-  .app-container.view-map .panel-stream-inspector {
-    display: none;
-  }
-
-  /* Player Focus Mode on Mobile */
-  .app-container.view-player .panel-stream-inspector {
-    display: flex;
-    width: 100% !important;
-  }
-  .app-container.view-player .panel-feed-browser {
-    display: flex;
-    width: 100% !important;
-  }
-  .app-container.view-player .panel-map-container {
-    display: none;
-  }
-
-  /* Full Grid Mode on Mobile */
-  .app-container.view-grid .feed-card-list {
-    grid-template-columns: 1fr;
-    padding: 0.5rem;
-  }
-
-  /* Player & Video Elements */
-  .video-box {
-    width: 100%;
-    aspect-ratio: 16 / 9;
-    height: auto !important;
-    min-height: 200px;
-    max-height: 45vh;
+  .video-wrapper {
+    min-height: 190px;
+    max-height: 38vh;
   }
 
   .stream-tech-bar {
     grid-template-columns: repeat(2, 1fr);
-    gap: 0.4rem;
+    gap: 0.35rem;
   }
 
   .audit-grid {
     grid-template-columns: 1fr;
   }
+
   .audit-item.col-span-2 {
     grid-column: span 1;
+  }
+
+  /* Fixed Bottom Navigation Bar for Mobile */
+  .mobile-nav-bar {
+    display: flex !important;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 54px;
+    height: calc(54px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: rgba(10, 14, 23, 0.96);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-top: 1px solid var(--border-subtle);
+    z-index: 1000;
+    align-items: center;
+    justify-content: space-around;
+  }
+
+  .mobile-nav-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    padding: 0.3rem 0.2rem;
+    gap: 0.18rem;
+    font-size: 0.65rem;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    transition: color 0.15s ease;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-nav-btn i {
+    width: 19px;
+    height: 19px;
+    transition: transform 0.15s ease;
+  }
+
+  .mobile-nav-btn.active {
+    color: var(--accent-cyan);
+    font-weight: 600;
+  }
+
+  .mobile-nav-btn.active i {
+    transform: scale(1.12);
+    stroke: var(--accent-cyan);
+    filter: drop-shadow(0 0 6px rgba(6, 182, 212, 0.5));
+  }
+
+  .mobile-nav-icon-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .mobile-nav-live-indicator {
+    display: none;
+    position: absolute;
+    top: -2px;
+    right: -4px;
+    width: 6px;
+    height: 6px;
+    background: var(--accent-emerald);
+    border-radius: 50%;
+    box-shadow: 0 0 6px var(--accent-emerald);
+    animation: pulse 1.5s infinite;
+  }
+
+  .mobile-nav-live-indicator.live {
+    display: block;
   }
 
   /* Modals on Mobile */
@@ -1841,14 +2080,17 @@ body.dark-theme {
     max-width: 95vw;
     max-height: 92vh;
   }
+
   .modal-dialog.modal-lg {
     width: 95vw;
     max-width: 95vw;
     height: 90vh;
   }
+
   .modal-body-split {
     flex-direction: column;
   }
+
   .education-nav {
     width: 100%;
     display: flex;
@@ -1859,6 +2101,7 @@ body.dark-theme {
     max-height: 70px;
     gap: 0.4rem;
   }
+
   .education-nav-item {
     flex: 0 0 auto;
     margin-bottom: 0;
@@ -1868,20 +2111,24 @@ body.dark-theme {
 
 /* Extra Small Phones (<= 480px) */
 @media (max-width: 480px) {
-  .brand-subtitle {
-    display: none;
-  }
   .brand-title {
-    font-size: 1.1rem;
+    font-size: 0.9rem;
   }
+
+  .search-box input {
+    font-size: 14px !important;
+  }
+
   .feed-card-info {
-    padding: 0.5rem 0.6rem;
+    padding: 0.45rem 0.55rem;
   }
+
   .feed-card-thumb {
-    height: 120px;
+    width: 85px;
+    height: 75px;
   }
-  .nav-actions .btn {
-    font-size: 0.68rem;
-    padding: 0.35rem 0.45rem;
+
+  .mobile-quick-cam-name {
+    max-width: 140px;
   }
 }
