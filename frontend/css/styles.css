@@ -1578,17 +1578,30 @@ body.dark-theme {
 
 /* Mobile Devices & Small Tablets (<= 900px) */
 @media (max-width: 900px) {
-  /* Navigation Bar */
+  /* Prevent full-page drift so header and search NEVER scroll away */
+  html, body {
+    height: 100%;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* Navigation Bar: Pinned at top */
   .navbar {
+    flex-shrink: 0;
     flex-direction: column;
     align-items: stretch;
-    padding: 0.5rem 0.75rem;
-    gap: 0.5rem;
+    padding: 0.4rem 0.75rem;
+    gap: 0.35rem;
     height: auto;
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+    z-index: 100;
   }
 
   .nav-brand {
+    display: flex;
     justify-content: space-between;
+    align-items: center;
     width: 100%;
   }
 
@@ -1596,44 +1609,52 @@ body.dark-theme {
     display: flex;
     overflow-x: auto;
     flex-wrap: nowrap;
-    padding-bottom: 0.25rem;
+    padding-bottom: 0.15rem;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
-    gap: 0.4rem;
+    gap: 0.35rem;
   }
   .nav-metrics::-webkit-scrollbar {
     display: none;
   }
   .metric-card {
     flex: 0 0 auto;
-    min-width: 110px;
+    min-width: 95px;
+    padding: 0.2rem 0.45rem;
+  }
+  .metric-label {
+    font-size: 0.52rem;
+  }
+  .metric-val {
+    font-size: 0.78rem;
   }
 
   .nav-actions {
     display: flex;
     justify-content: space-between;
     width: 100%;
-    gap: 0.4rem;
+    gap: 0.35rem;
   }
   .nav-actions .btn {
     flex: 1;
     justify-content: center;
-    font-size: 0.72rem;
-    padding: 0.4rem 0.5rem;
+    font-size: 0.7rem;
+    padding: 0.35rem 0.45rem;
   }
 
-  /* Mobile Toolbar & Search (Normal flow: does NOT overlap or cover player) */
+  /* Pinned Toolbar & Search: ALWAYS visible, never scrolls away */
   .toolbar {
+    flex-shrink: 0;
     position: relative;
     top: auto;
-    z-index: 10;
+    z-index: 90;
     flex-direction: column;
     align-items: stretch;
-    padding: 0.6rem 0.75rem;
-    gap: 0.5rem;
+    padding: 0.45rem 0.75rem;
+    gap: 0.4rem;
     background: var(--bg-primary);
-    box-shadow: none;
     border-bottom: 1px solid var(--border-subtle);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
   }
 
   .search-box {
@@ -1644,9 +1665,9 @@ body.dark-theme {
 
   .search-box input {
     width: 100%;
-    height: 44px;
-    font-size: 16px !important; /* Critical: 16px prevents iOS Safari from auto-zooming */
-    padding: 0.45rem 2.4rem 0.45rem 2.5rem;
+    height: 40px;
+    font-size: 16px !important; /* Prevents iOS Safari auto-zoom */
+    padding: 0.4rem 2.2rem 0.4rem 2.4rem;
     background: var(--bg-surface);
     border: 1px solid rgba(6, 182, 212, 0.35);
     border-radius: var(--radius-sm);
@@ -1659,24 +1680,24 @@ body.dark-theme {
   }
 
   .search-icon {
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
     left: 10px;
     color: var(--accent-cyan);
   }
 
   .btn-clear {
-    width: 34px;
-    height: 34px;
-    right: 5px;
-    font-size: 1.3rem;
+    width: 32px;
+    height: 32px;
+    right: 4px;
+    font-size: 1.2rem;
     color: var(--text-muted);
   }
 
   .filter-group {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 0.4rem;
+    gap: 0.35rem;
     width: 100%;
   }
 
@@ -1687,14 +1708,14 @@ body.dark-theme {
   .select-wrapper select {
     width: 100%;
     min-width: 0;
-    height: 36px;
-    font-size: 0.76rem;
+    height: 34px;
+    font-size: 0.74rem;
   }
 
   #btn-reset-filters {
     grid-column: span 2;
     justify-content: center;
-    height: 36px;
+    height: 34px;
   }
 
   .view-toggle {
@@ -1703,22 +1724,26 @@ body.dark-theme {
   }
   .view-btn {
     flex: 1;
-    height: 32px;
+    height: 30px;
   }
 
-  /* 3-Panel Workspace Stacking */
+  /* Scrollable Workspace: Sits cleanly BELOW pinned header (Player never covered!) */
   .app-container,
   .app-container.view-triage,
   .app-container.view-map,
   .app-container.view-player,
   .app-container.view-grid {
-    flex-direction: column;
+    flex: 1 1 0%;
+    min-height: 0;
+    height: 100%;
     overflow-y: auto;
-    height: auto;
-    min-height: calc(100vh - 160px);
+    -webkit-overflow-scrolling: touch;
+    flex-direction: column;
+    width: 100%;
+    position: relative;
   }
 
-  /* In default Triage Mode on mobile: Stack Video Player on top, Map middle, Feeds below */
+  /* In default Triage Mode on mobile: Player top, Map middle, Feeds bottom */
   .app-container.view-triage .panel-stream-inspector {
     display: flex;
     order: 1;
@@ -1727,6 +1752,7 @@ body.dark-theme {
     min-width: 0 !important;
     border-left: none;
     border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
   }
 
   .app-container.view-triage .panel-map-container {
@@ -1746,6 +1772,13 @@ body.dark-theme {
     min-width: 0 !important;
     border-right: none;
     height: auto !important;
+    flex-shrink: 0;
+  }
+
+  .feed-card-list {
+    overflow-y: visible !important;
+    height: auto !important;
+    padding: 0.5rem;
   }
 
   /* Map Focus Mode on Mobile */
