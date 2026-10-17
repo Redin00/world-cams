@@ -28,6 +28,18 @@ async def test_full_pipeline():
         assert res.status_code == 200, f"Feeds list failed: {res.text}"
         all_feeds = res.json()
         print(f"    -> Total feeds: {all_feeds['total']}, Retrieved: {len(all_feeds['items'])}")
+        if all_feeds["total"] == 0:
+            print("[*] Database is empty. Creating test feed for verification...")
+            await client.post("/api/feeds", json={
+                "ip": "93.66.40.62",
+                "port": 8050,
+                "product": "Panasonic Network Camera",
+                "rtsp_url": "http://93.66.40.62:8050/nphMotionJpeg?Resolution=640x480&Quality=Standard",
+                "country_code": "IT",
+                "country_name": "Italy"
+            })
+            res = await client.get("/api/feeds")
+            all_feeds = res.json()
         assert all_feeds["total"] > 0, "No feeds found in database!"
 
         # 3. Facets test
@@ -55,6 +67,18 @@ async def test_full_pipeline():
         assert res.status_code == 200
         stream = res.json()
         print(f"    -> Stream route ready: {stream['webrtc_whep_url']}")
+
+        # 5b. Stream registration with remote VPS Host header
+        res_remote = await client.post(
+            "/api/streams/play",
+            json={"feed_id": sample_feed["id"]},
+            headers={"Host": "198.51.100.25:8000"}
+        )
+        assert res_remote.status_code == 200
+        remote_stream = res_remote.json()
+        if remote_stream["webrtc_url"]:
+            assert "198.51.100.25" in remote_stream["webrtc_url"], f"Host not rewritten: {remote_stream['webrtc_url']}"
+            print(f"    -> Remote client host rewritten: {remote_stream['webrtc_url']}")
 
         # 6. Shodan Account Info check
         print("[*] Testing /api/shodan/info...")

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Header, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Header, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response, HTMLResponse
@@ -309,7 +309,7 @@ async def get_facets(db: AsyncSession = Depends(get_db)):
 # ==========================================
 
 @app.post("/api/streams/play", response_model=StreamResponse)
-async def play_stream(req: StreamStartRequest, db: AsyncSession = Depends(get_db)):
+async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """
     On-demand RTSP / HTTP streaming proxy controller.
     Automatically resolves working RTSP/HTTP subpaths for camera feeds,
@@ -465,6 +465,21 @@ async def play_stream(req: StreamStartRequest, db: AsyncSession = Depends(get_db
         stream_path = f"stream_{abs(hash(rtsp_url)) % 1000000}"
 
     route_info = await mediamtx_service.register_stream(stream_path, rtsp_url)
+
+    # Dynamic host resolution for external VPS/remote clients:
+    # If MEDIAMTX_PUBLIC_HOST is not configured, dynamically rewrite any
+    # 'localhost' or '127.0.0.1' with the host IP/domain used by the client.
+    if not settings.MEDIAMTX_PUBLIC_HOST:
+        client_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "").split(":")[0] or ""
+        if client_host and client_host not in ("localhost", "127.0.0.1", "0.0.0.0"):
+            for k in ("webrtc_url", "webrtc_whep_url", "hls_url", "hls_manifest_url"):
+                if route_info.get(k):
+                    route_info[k] = (
+                        route_info[k]
+                        .replace("http://localhost:", f"http://{client_host}:")
+                        .replace("http://127.0.0.1:", f"http://{client_host}:")
+                    )
+
     return StreamResponse(**route_info)
 
 @app.get("/api/proxy/stream")

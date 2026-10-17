@@ -30,6 +30,19 @@ class Settings(BaseSettings):
     MEDIAMTX_HLS_URL: str = "http://localhost:8888"
     MEDIAMTX_WHEP_URL: str = "http://localhost:8889"
     MEDIAMTX_RTSP_PORT: int = 8554
+    MEDIAMTX_PUBLIC_HOST: Optional[str] = None
+
+    @property
+    def effective_hls_url(self) -> str:
+        if self.MEDIAMTX_PUBLIC_HOST:
+            return f"http://{self.MEDIAMTX_PUBLIC_HOST}:8888"
+        return self.MEDIAMTX_HLS_URL
+
+    @property
+    def effective_whep_url(self) -> str:
+        if self.MEDIAMTX_PUBLIC_HOST:
+            return f"http://{self.MEDIAMTX_PUBLIC_HOST}:8889"
+        return self.MEDIAMTX_WHEP_URL
 
     # Database & Data Paths
     DATABASE_URL: str = f"sqlite+aiosqlite:///{BASE_DIR.as_posix()}/world_cams.db"

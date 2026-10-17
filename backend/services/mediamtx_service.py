@@ -16,8 +16,8 @@ class MediaMTXService:
     def __init__(self):
         self.process: Optional[subprocess.Popen] = None
         self.api_url = settings.MEDIAMTX_API_URL
-        self.hls_url = settings.MEDIAMTX_HLS_URL
-        self.whep_url = settings.MEDIAMTX_WHEP_URL
+        self.hls_url = settings.effective_hls_url
+        self.whep_url = settings.effective_whep_url
         self.rtsp_port = settings.MEDIAMTX_RTSP_PORT
 
     async def is_running(self) -> bool:

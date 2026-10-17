@@ -74,8 +74,8 @@ class CameraFeedModel(Base):
             "screenshot_url": self.screenshot_url,
             "notes": self.notes,
             "is_favorite": self.is_favorite,
-            "hls_url": f"{settings.MEDIAMTX_HLS_URL}/{self.stream_path}",
-            "webrtc_url": f"{settings.MEDIAMTX_WHEP_URL}/{self.stream_path}"
+            "hls_url": f"{settings.effective_hls_url}/{self.stream_path}",
+            "webrtc_url": f"{settings.effective_whep_url}/{self.stream_path}"
         }
 
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
@@ -89,45 +89,6 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 async def init_db():
-    """Create database schema and populate with initial sample feeds if empty."""
+    """Create database schema."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-    # Check if feeds table is empty, then seed from sample_feeds.json
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(func.count(CameraFeedModel.id)))
-        count = result.scalar()
-        if count == 0:
-            sample_path = Path(settings.SAMPLE_DATA_PATH)
-            if sample_path.exists():
-                logger.info(f"Seeding database with sample feeds from {sample_path}...")
-                with open(sample_path, "r", encoding="utf-8") as f:
-                    samples = json.load(f)
-                    for item in samples:
-                        feed = CameraFeedModel(
-                            id=item["id"],
-                            ip=item["ip"],
-                            port=item.get("port", 554),
-                            country_code=item.get("country_code", "XX"),
-                            country_name=item.get("country_name", "Unknown"),
-                            city=item.get("city"),
-                            latitude=item.get("latitude", 0.0),
-                            longitude=item.get("longitude", 0.0),
-                            org=item.get("org", "Unknown"),
-                            isp=item.get("isp"),
-                            asn=item.get("asn"),
-                            product=item.get("product", "Generic RTSP IP Camera"),
-                            rtsp_url=item["rtsp_url"],
-                            stream_path=item["stream_path"],
-                            auth_status=item.get("auth_status", "unauthenticated"),
-                            risk_level=item.get("risk_level", "high"),
-                            banner=item.get("banner"),
-                            last_seen=item.get("last_seen"),
-                            tags_json=json.dumps(item.get("tags", [])),
-                            screenshot_url=item.get("screenshot_url"),
-                            notes=item.get("notes"),
-                            is_favorite=item.get("is_favorite", False)
-                        )
-                        session.add(feed)
-                    await session.commit()
-                logger.info(f"Successfully seeded {len(samples)} camera feeds.")

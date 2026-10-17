@@ -117,12 +117,51 @@ APP_HOST=0.0.0.0
 APP_PORT=8000
 DEBUG=True
 
+# Optional: Set your VPS Public IP or Domain if behind NAT/reverse proxy
+# (If omitted, WorldCams automatically detects it from the incoming Host header)
+# MEDIAMTX_PUBLIC_HOST=your-vps-ip-or-domain
+
 # MediaMTX Ports
 MEDIAMTX_RTSP_PORT=8554
 MEDIAMTX_API_URL=http://localhost:9997
 MEDIAMTX_WHEP_URL=http://localhost:8889
 MEDIAMTX_HLS_URL=http://localhost:8888
 ```
+
+---
+
+## 🌐 VPS / Remote Deployment (Oracle Linux, AWS, Hetzner, etc.)
+
+When accessing WorldCams from an external device or different internet connection:
+
+### 1. Firewall & Cloud Security Group Ports
+Ensure the following ports are open in both your **VPS Cloud Security List / Security Group** and local firewall:
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| `8000` | TCP | FastAPI Web UI, API, MJPEG & Web Proxy Gateway |
+| `8889` | TCP | MediaMTX WebRTC (WHEP) Player Frame |
+| `8888` | TCP | MediaMTX HLS Stream Fallback |
+| `8189` | UDP / TCP | MediaMTX WebRTC Media Track Transmission |
+
+On **Oracle Linux / RHEL / CentOS (`firewalld`)**:
+```bash
+sudo firewall-cmd --permanent --add-port=8000/tcp --add-port=8889/tcp --add-port=8888/tcp --add-port=8189/udp --add-port=8189/tcp
+sudo firewall-cmd --reload
+```
+
+On **Ubuntu / Debian (`ufw`)**:
+```bash
+sudo ufw allow 8000/tcp
+sudo ufw allow 8889/tcp
+sudo ufw allow 8888/tcp
+sudo ufw allow 8189/udp
+sudo ufw allow 8189/tcp
+```
+
+> [!NOTE]
+> On Oracle Cloud, AWS, or GCP, remember to also add matching **Ingress Rules** in the Cloud Web Console (VCN Security List / Security Group).
+
 
 ---
 
