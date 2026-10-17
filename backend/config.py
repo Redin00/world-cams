@@ -1,3 +1,4 @@
+import sys
 from typing import Optional
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,7 +24,7 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # MediaMTX Streaming Server
-    MEDIAMTX_PATH: str = str(BASE_DIR / "bin" / "mediamtx")
+    MEDIAMTX_PATH: str = str(BASE_DIR / "bin" / ("mediamtx.exe" if sys.platform == "win32" else "mediamtx"))
     MEDIAMTX_CONFIG: str = str(BASE_DIR / "mediamtx.yml")
     MEDIAMTX_API_URL: str = "http://localhost:9997"
     MEDIAMTX_HLS_URL: str = "http://localhost:8888"
@@ -31,7 +32,7 @@ class Settings(BaseSettings):
     MEDIAMTX_RTSP_PORT: int = 8554
 
     # Database & Data Paths
-    DATABASE_URL: str = f"sqlite+aiosqlite:///{BASE_DIR}/world_cams.db"
+    DATABASE_URL: str = f"sqlite+aiosqlite:///{BASE_DIR.as_posix()}/world_cams.db"
     SAMPLE_DATA_PATH: str = str(BASE_DIR / "data" / "sample_feeds.json")
     STATIC_DIR: str = str(BASE_DIR / "frontend")
 

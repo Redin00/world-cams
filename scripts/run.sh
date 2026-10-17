@@ -52,16 +52,27 @@ echo "[*] Launching MediaMTX streaming gateway on :8554 (RTSP), :8888 (HLS), :88
 MTX_PID=$!
 sleep 1
 
-# 6. Launch FastAPI backend
-echo "[*] Launching FastAPI backend on http://localhost:8000..."
-python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload &
+# 6. Read APP_PORT and APP_HOST from .env, with CLI argument or env override
+ENV_PORT=$(grep -E '^\s*APP_PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d ' "\r' || true)
+ENV_HOST=$(grep -E '^\s*APP_HOST=' .env 2>/dev/null | cut -d '=' -f2 | tr -d ' "\r' || true)
+
+APP_PORT="${1:-${PORT:-${ENV_PORT:-8000}}}"
+APP_HOST="${ENV_HOST:-0.0.0.0}"
+
+DISPLAY_HOST="$APP_HOST"
+if [ "$DISPLAY_HOST" = "0.0.0.0" ]; then
+    DISPLAY_HOST="localhost"
+fi
+
+echo "[*] Launching FastAPI backend on http://${DISPLAY_HOST}:${APP_PORT}..."
+python3 -m uvicorn backend.main:app --host "$APP_HOST" --port "$APP_PORT" --reload &
 UVICORN_PID=$!
 
 echo ""
 echo "=========================================================="
 echo "  [✓] WorldCams is running!"
-echo "  -> Web UI & Dashboard: http://localhost:8000"
-echo "  -> API Documentation: http://localhost:8000/docs"
+echo "  -> Web UI & Dashboard: http://${DISPLAY_HOST}:${APP_PORT}"
+echo "  -> API Documentation: http://${DISPLAY_HOST}:${APP_PORT}/docs"
 echo "  -> MediaMTX WebRTC:   http://localhost:8889"
 echo "  -> MediaMTX HLS:      http://localhost:8888"
 echo "=========================================================="

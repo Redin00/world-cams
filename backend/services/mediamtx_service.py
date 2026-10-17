@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sys
 import re
 import subprocess
 from pathlib import Path
@@ -35,19 +36,33 @@ class MediaMTXService:
             return
 
         bin_path = Path(settings.MEDIAMTX_PATH)
+        if sys.platform == "win32" and not bin_path.exists():
+            exe_cand = bin_path.with_suffix(".exe")
+            if exe_cand.exists():
+                bin_path = exe_cand
+
         conf_path = Path(settings.MEDIAMTX_CONFIG)
 
         if not bin_path.exists():
-            logger.warning(f"MediaMTX binary not found at {bin_path}. Run ./scripts/install_mediamtx.sh")
+            cmd_hint = "run.bat / scripts/install_mediamtx.ps1" if sys.platform == "win32" else "./scripts/install_mediamtx.sh"
+            logger.warning(f"MediaMTX binary not found at {bin_path}. Run {cmd_hint}")
             return
 
         logger.info(f"Launching MediaMTX process with config: {conf_path}")
         try:
+            is_win = sys.platform == "win32"
+            popen_kwargs: Dict[str, Any] = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+            if is_win:
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["preexec_fn"] = os.setsid
+
             self.process = subprocess.Popen(
                 [str(bin_path), str(conf_path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                preexec_fn=os.setsid
+                **popen_kwargs
             )
             # Wait up to 4 seconds for it to start
             for _ in range(8):
@@ -63,8 +78,11 @@ class MediaMTXService:
         """Terminate the MediaMTX subprocess if we spawned it."""
         if self.process:
             try:
-                import signal
-                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                if sys.platform == "win32":
+                    self.process.terminate()
+                else:
+                    import signal
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
                 self.process = None
                 logger.info("MediaMTX stopped.")
             except Exception as e:

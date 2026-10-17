@@ -1,57 +1,69 @@
 # WorldCams: Exposed Camera Intelligence & Security Awareness Platform
 
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%20%7C%20macOS-blue.svg?style=flat)](https://github.com)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg?style=flat&logo=fastapi)](https://fastapi.tiangolo.com)
 [![MediaMTX](https://img.shields.io/badge/Streaming-MediaMTX-red.svg?style=flat)](https://github.com/bluenviron/mediamtx)
 [![Shodan](https://img.shields.io/badge/OSINT-Shodan%20API-red.svg?style=flat)](https://www.shodan.io)
 [![Leaflet](https://img.shields.io/badge/Map-Leaflet.js-199900.svg?style=flat&logo=leaflet)](https://leafletjs.com)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg?style=flat&logo=python)](https://python.org)
 
-**WorldCams** is a cybersecurity intelligence dashboard that discovers, maps, and audits internet-exposed IP surveillance cameras (RTSP, HTTP/MJPEG, and Web Management Consoles). It bridges RTSP streams to low-latency WebRTC via **MediaMTX**, handles SSL/TLS legacy camera quirks, and visualizes global exposures on an interactive map.
+**WorldCams** is a cybersecurity intelligence dashboard that discovers, maps, and audits internet-exposed IP surveillance cameras (RTSP, HTTP/MJPEG, and Web Management Consoles). It bridges RTSP streams to browser-native WebRTC via **MediaMTX**, handles SSL/TLS legacy camera quirks (TLS 1.0/1.1 and unencrypted port 443), and visualizes global exposures on an interactive map.
 
 ---
 
 ## ⚡ Quickstart
 
 ### Prerequisites
-- Linux (x86_64 or aarch64)
-- Python 3.10+
-- `curl`
+- **Python 3.10+** (installed and added to PATH)
+- Works natively on **Linux** (x86_64, ARM64/aarch64), **Windows** (x86_64), and **macOS**.
 
-### 1. Launch with One Command
+---
 
-Run the supervisor script (handles virtualenv, dependencies, MediaMTX binary, and server startup):
+### 🐧 Linux / macOS
+
+Run the supervisor script (automatically configures virtualenv, installs dependencies, downloads MediaMTX, and starts all services):
 
 ```bash
 ./scripts/run.sh
 ```
 
-The runner automatically:
-1. Creates `venv` and installs packages from `requirements.txt`.
-2. Downloads and verifies the standalone `mediamtx` streaming binary.
-3. Starts **MediaMTX** (RTSP `:8554`, WebRTC `:8889`, API `:9997`).
-4. Starts **FastAPI** on `http://localhost:8000`.
-
-Open your browser to:
-👉 **`http://localhost:8000`**
-
----
-
-### Manual Launch (Alternative)
-
-If you prefer running services in separate terminals:
-
+**Need to change the port?** (e.g. if port 8000 is occupied):
 ```bash
-# Terminal 1: MediaMTX streaming gateway
-./bin/mediamtx mediamtx.yml
+# Pass custom port directly:
+./scripts/run.sh 8080
 
-# Terminal 2: FastAPI backend
-source venv/bin/activate
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+# Or using environment variable:
+PORT=8080 ./scripts/run.sh
 ```
 
 ---
 
-## ️ How to Use
+### 🪟 Windows (Native)
+
+You can launch WorldCams with a single click:
+- **Double-click `run.bat`** in the project root folder.
+- Or pass a custom port from Command Prompt / PowerShell:
+  ```cmd
+  run.bat 8080
+  ```
+- Or run via **PowerShell**:
+  ```powershell
+  .\scripts\run.ps1 -Port 8080
+  ```
+
+The Windows launcher automatically:
+1. Creates `venv\` and installs dependencies from `requirements.txt`.
+2. Downloads and extracts the official 64-bit `mediamtx.exe` binary into `bin\`.
+3. Starts **MediaMTX** and **FastAPI** concurrently, with automatic clean shutdown on `Ctrl+C`.
+
+---
+
+Once started, open your browser to:
+👉 **`http://localhost:8000`** *(or your chosen custom port)*
+
+---
+
+## 🕹️ How to Use
 
 ### 1. Discover & Ingest Cameras
 Click the **🔍 Shodan Search** button in the top navigation bar. Two reconnaissance modes are supported:
@@ -100,7 +112,7 @@ SHODAN_API_KEY=your_shodan_key_here
 # Admin Access Token (required for deleting camera feeds)
 ADMIN_TOKEN=worldcams-admin-2026
 
-# Server Bindings
+# Web UI Server Bindings
 APP_HOST=0.0.0.0
 APP_PORT=8000
 DEBUG=True
@@ -119,7 +131,11 @@ MEDIAMTX_HLS_URL=http://localhost:8888
 Run the automated test suite to verify database models, streaming proxy, resolver, and admin permissions:
 
 ```bash
+# Linux / macOS
 ./venv/bin/python3 tests/test_api.py
+
+# Windows
+.\venv\Scripts\python.exe tests\test_api.py
 ```
 
 ---
