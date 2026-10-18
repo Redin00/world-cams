@@ -738,15 +738,15 @@ class VendorRtspResolver:
                     pass
                 return True, f"rtsp://{user}:{pwd}@{host}:{port}{path}"
 
-            # If server issued a fresh per-connection Digest nonce on CSeq: 1, authenticate on CSeq: 2
+            # If server challenged on CSeq: 1, authenticate on CSeq: 2
             if "401 Unauthorized" in resp:
                 new_realm_m = re.search(r'realm="([^"]*)"', resp, re.IGNORECASE)
                 new_nonce_m = re.search(r'nonce="([^"]+)"', resp, re.IGNORECASE)
                 new_realm = new_realm_m.group(1) if new_realm_m else (realm or "")
-                new_nonce = new_nonce_m.group(1) if new_nonce_m else None
+                active_nonce = new_nonce_m.group(1) if new_nonce_m else nonce
 
-                if new_nonce and new_nonce != nonce:
-                    auth_hdr2 = self._compute_digest("DESCRIBE", uri, user, pwd, new_realm, new_nonce)
+                if active_nonce is not None:
+                    auth_hdr2 = self._compute_digest("DESCRIBE", uri, user, pwd, new_realm, active_nonce)
                     req2 = (
                         f"DESCRIBE {uri} RTSP/1.0\r\n"
                         f"CSeq: 2\r\n"
@@ -916,6 +916,28 @@ class VendorRtspResolver:
                         product=product or vendor_key,
                         realm=target_realm,
                         nonce=target_nonce,
+                        timeout=1.2
+                    )
+                    tested_count += len(creds_list)
+                    if retry_ok and used_cred:
+                        return {
+                            "resolved": True,
+                            "protocol": "rtsp",
+                            "stream_url": auth_url,
+                            "vendor": vendor_key,
+                            "tested_count": tested_count,
+                            "auth": "default_creds",
+                            "matched_cred": used_cred,
+                            "message": f"Resolved authenticated RTSP stream with default credentials ({used_cred[0]}:{used_cred[1]}): {auth_url}"
+                        }
+            elif not auth_required_candidates and creds_list and batch_reachable:
+                # If no paths returned an explicit 401 challenge but host is responsive, try vendor paths with default creds
+                for target_p in candidate_paths[:5]:
+                    retry_ok, auth_url, used_cred = await self.retry_rtsp_with_default_creds(
+                        ip=ip,
+                        port=port,
+                        path=target_p,
+                        product=product or vendor_key,
                         timeout=1.2
                     )
                     tested_count += len(creds_list)
