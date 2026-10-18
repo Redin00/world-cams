@@ -520,8 +520,8 @@ class VendorRtspResolver:
         if clean_path and clean_path not in ("/", "/live", "/onvif1"):
             paths_to_try.append(clean_path)
 
-        # Add vendor profile paths (up to top 4 paths)
-        for vp in default_vendor_paths[:4]:
+        # Add all vendor profile paths
+        for vp in default_vendor_paths:
             if vp not in paths_to_try:
                 paths_to_try.append(vp)
 
@@ -538,10 +538,6 @@ class VendorRtspResolver:
                 ip, port, cand_path, creds=creds[0], timeout=timeout
             )
             if is_ok:
-                # Ensure URL includes credentials if matched
-                if "@" not in auth_url:
-                    user, pwd = creds[0]
-                    auth_url = f"rtsp://{user}:{pwd}@{ip}:{port}{cand_path}"
                 logger.info(f"[Auto-Auth] RTSP {ip}:{port}{cand_path} authenticated for {vendor_key.upper()} with default credentials: {creds[0][0]}:***")
                 return True, auth_url, creds[0]
 
@@ -564,8 +560,8 @@ class VendorRtspResolver:
                     if success:
                         logger.info(f"[Auto-Auth] RTSP {ip}:{port}{cand_path} authenticated for {vendor_key.upper()} with default credentials: {cred[0]}:***")
                         return True, next_auth_url, cred
-                # All vendor credentials were tested against the active 401 endpoint
-                return False, f"rtsp://{ip}:{port}{cand_path}", None
+                # Continue to next candidate path in case another path accepts credentials
+                continue
 
             if code == 0:
                 # Host/port unreachable or timed out; do not waste time on further paths
@@ -826,9 +822,8 @@ class VendorRtspResolver:
         """
         Automated Vendor RTSP Profile & Continuous Resolver Engine.
         Executes continuous multi-path probing across vendor profiles and SmartRTSP catalog.
-        - Prioritizes vendor-specific paths when known.
-        - If vendor is unknown or stream fails, continuously tests candidate paths in fast concurrent batches.
-        - Features RFC RTSP Digest Auth negotiation for cameras with default factory credentials.
+        - Step 1: Tests ALL candidate paths WITHOUT credentials first.
+        - Step 2: Only if no path works without credentials, tests default vendor credentials across candidate paths.
         - Falls back to HTTP MJPEG video / snapshot validation if RTSP is unreachable.
         """
         vendor_key = self.detect_vendor_key(product)
@@ -871,22 +866,25 @@ class VendorRtspResolver:
 
         # =====================================================================
         # Phase 1: RTSP Probing (Ports 554, 8554 or explicit rtsp:// URLs)
-        # Continuous batch probing across candidate paths
+        # Step 1A: Probe ALL candidate paths WITHOUT credentials first!
         # =====================================================================
         if port in (554, 8554) or (port not in (443, 80, 8080, 8050, 8000) and "rtsp://" in current_url):
-            logger.info(f"Continuous RTSP probing for {ip}:{port} (Vendor: {vendor_key.upper()}, Candidates: {len(candidate_paths)})...")
+            logger.info(f"Continuous RTSP probing (unauthenticated pass) for {ip}:{port} (Vendor: {vendor_key.upper()}, Candidates: {len(candidate_paths)})...")
 
-            # Process candidate paths in concurrent batches of 8 for optimal speed without socket flooding
+            # Process ALL candidate paths in concurrent batches of 8 without credentials
             BATCH_SIZE = 8
             for i in range(0, len(candidate_paths), BATCH_SIZE):
                 batch = candidate_paths[i:i + BATCH_SIZE]
-                tasks = [self.probe_rtsp_path(ip, port, path, creds=None, timeout=1.2) for path in batch]
+                tasks = [self.probe_rtsp_path(ip, port, path, creds=None, timeout=1.0) for path in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 tested_count += len(batch)
 
+                batch_reachable = False
                 for res in results:
                     if isinstance(res, tuple):
                         success, code, url, realm, nonce = res
+                        if code != 0:
+                            batch_reachable = True
                         if success:
                             return {
                                 "resolved": True,
@@ -899,15 +897,17 @@ class VendorRtspResolver:
                             }
                         elif code == 401:
                             p_only = urlparse(url).path + (f"?{urlparse(url).query}" if urlparse(url).query else "")
-                            auth_required_candidates.append((p_only, realm, nonce))
+                            if not any(existing[0] == p_only for existing in auth_required_candidates):
+                                auth_required_candidates.append((p_only, realm, nonce))
 
-                # If we've already found valid 401 candidates, test credentials before going deeper
-                if auth_required_candidates:
+                # Only stop early if the target IP:port is completely unreachable (all sockets timed out / refused)
+                if not batch_reachable:
                     break
 
-            # If any candidate paths responded with 401 Unauthorized, test default vendor credentials
+            # Step 1B: ONLY AFTER all candidate paths were tested without credentials,
+            # try default vendor credentials across the paths that required authentication
             if auth_required_candidates and creds_list:
-                for target_p, target_realm, target_nonce in auth_required_candidates[:3]:
+                for target_p, target_realm, target_nonce in auth_required_candidates:
                     logger.info(f"Testing default vendor credentials on 401 endpoint: {target_p} (Vendor: {vendor_key.upper()}, Realm: {target_realm})...")
                     retry_ok, auth_url, used_cred = await self.retry_rtsp_with_default_creds(
                         ip=ip,

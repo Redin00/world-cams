@@ -309,6 +309,21 @@ async def get_facets(db: AsyncSession = Depends(get_db)):
 # MediaMTX Streaming Controller
 # ==========================================
 
+def _clean_http_url(u: Optional[str]) -> str:
+    if not u:
+        return ""
+    return u.replace("&amp;", "&").strip()
+
+
+def _is_specific_http_stream_url(u: Optional[str], port: int) -> bool:
+    if not u or "unsplash" in u:
+        return False
+    cleaned = _clean_http_url(u).rstrip("/")
+    if cleaned.endswith(f":{port}") or cleaned.endswith("/live") or cleaned.endswith("/onvif1"):
+        return False
+    return cleaned.startswith(("http://", "https://"))
+
+
 @app.post("/api/streams/play", response_model=StreamResponse)
 async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """
@@ -333,27 +348,35 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         # ---------------------------------------------------------------------
         if feed.port in (443, 80, 8080, 8050, 8000) or (rtsp_url and rtsp_url.startswith(("http://", "https://"))):
             scheme = "https" if feed.port == 443 or (rtsp_url and rtsp_url.startswith("https://")) else "http"
-            has_valid_stream = (
-                feed.screenshot_url
-                and "unsplash" not in feed.screenshot_url
-                and not feed.screenshot_url.rstrip("/").endswith(f":{feed.port}")
-                and "/live" not in (feed.screenshot_url or "")
-            )
+            has_valid_stream = _is_specific_http_stream_url(feed.screenshot_url, feed.port) or _is_specific_http_stream_url(rtsp_url, feed.port)
+
+            if has_valid_stream:
+                clean_shot = _clean_http_url(feed.screenshot_url) if _is_specific_http_stream_url(feed.screenshot_url, feed.port) else None
+                clean_rtsp = _clean_http_url(rtsp_url) if _is_specific_http_stream_url(rtsp_url, feed.port) else None
+                effective_stream = clean_shot or clean_rtsp
+                if effective_stream and effective_stream != feed.rtsp_url:
+                    feed.rtsp_url = effective_stream
+                    if clean_shot and clean_shot != feed.screenshot_url:
+                        feed.screenshot_url = clean_shot
+                    await db.commit()
+                rtsp_url = effective_stream or rtsp_url
 
             # Auto-resolve live MJPEG video or JPEG snapshot subpath if not already established
             if not has_valid_stream:
-                resolve_res = await rtsp_resolver.resolve_camera(feed.ip, feed.port, feed.product or "", rtsp_url)
+                product_hint = f"{feed.product or ''} {feed.banner or ''}".strip()
+                resolve_res = await rtsp_resolver.resolve_camera(feed.ip, feed.port, product_hint, rtsp_url)
                 if resolve_res.get("resolved"):
                     stype = resolve_res.get("stream_type", "mjpeg")
+                    resolved_url = _clean_http_url(resolve_res["stream_url"])
                     if stype in ("mjpeg", "jpeg") or resolve_res.get("protocol") in ("http", "https"):
-                        feed.rtsp_url = resolve_res["stream_url"]
-                        feed.screenshot_url = resolve_res["stream_url"]
+                        feed.rtsp_url = resolved_url
+                        feed.screenshot_url = resolved_url
                         feed.notes = f"[Auto-Resolved {resolve_res.get('vendor','').upper()}] {resolve_res.get('message','')}"
                         await db.commit()
                         await db.refresh(feed)
                         return StreamResponse(
                             stream_path=feed.stream_path,
-                            rtsp_source=resolve_res["stream_url"],
+                            rtsp_source=resolved_url,
                             webrtc_url="",
                             webrtc_whep_url="",
                             hls_url="",
@@ -366,7 +389,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     elif stype == "web_ui":
                         return StreamResponse(
                             stream_path=feed.stream_path,
-                            rtsp_source=resolve_res["stream_url"],
+                            rtsp_source=resolved_url,
                             webrtc_url="",
                             webrtc_whep_url="",
                             hls_url="",
@@ -377,8 +400,9 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                             message=resolve_res.get("message", "Active Camera Web Interface")
                         )
 
-            genuine_snapshot = feed.screenshot_url if (feed.screenshot_url and "unsplash" not in feed.screenshot_url and not feed.screenshot_url.rstrip("/").endswith(f":{feed.port}")) else None
-            target_stream = genuine_snapshot or (rtsp_url if rtsp_url and not rtsp_url.rstrip("/").endswith(f":{feed.port}") else f"{scheme}://{feed.ip}:{feed.port}/")
+            genuine_snapshot = _clean_http_url(feed.screenshot_url) if _is_specific_http_stream_url(feed.screenshot_url, feed.port) else None
+            genuine_rtsp = _clean_http_url(rtsp_url) if _is_specific_http_stream_url(rtsp_url, feed.port) else None
+            target_stream = genuine_snapshot or genuine_rtsp or f"{scheme}://{feed.ip}:{feed.port}/"
 
             # If target_stream is generic root, probe root to verify if active web console
             if target_stream.rstrip("/").endswith(f":{feed.port}"):
@@ -410,6 +434,20 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                             continue
                         break
 
+                return StreamResponse(
+                    stream_path=feed.stream_path,
+                    rtsp_source=target_stream,
+                    webrtc_url="",
+                    webrtc_whep_url="",
+                    hls_url="",
+                    hls_manifest_url="",
+                    status="offline",
+                    stream_type="offline",
+                    web_url=f"{scheme}://{feed.ip}:{feed.port}/",
+                    message=f"Port {feed.port} unreachable or camera offline"
+                )
+
+            inferred_type = "mjpeg" if any(k in target_stream.lower() for k in ("mjpg", "mjpeg", "nphmotionjpeg", "video.cgi", "faststream", "videostream.cgi")) else "jpeg"
             return StreamResponse(
                 stream_path=feed.stream_path,
                 rtsp_source=target_stream,
@@ -418,7 +456,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                 hls_url="",
                 hls_manifest_url="",
                 status="http_stream",
-                stream_type="mjpeg",
+                stream_type=inferred_type,
                 web_url=f"{scheme}://{feed.ip}:{feed.port}/",
                 message=f"{scheme.upper()} Live Stream / Snapshot endpoint ready"
             )
@@ -427,11 +465,17 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         # Case B: Camera on Native RTSP Port (554, 8554, etc.)
         # Verify current path; if non-working or dummy '/live', perform continuous candidate probing
         # ---------------------------------------------------------------------
-        parsed_p = urlparse(rtsp_url).path if rtsp_url else ""
+        parsed_u = urlparse(rtsp_url) if rtsp_url else None
+        parsed_p = (parsed_u.path + (f"?{parsed_u.query}" if parsed_u.query else "")) if parsed_u else ""
+        existing_creds = (parsed_u.username, parsed_u.password or "") if (parsed_u and parsed_u.username) else None
+        product_hint = f"{feed.product or ''} {feed.banner or ''}".strip()
         current_works = False
-        if rtsp_url and parsed_p and parsed_p not in ("/", "/live"):
-            is_ok, code, target_url, realm, nonce = await rtsp_resolver.probe_rtsp_path(feed.ip, feed.port, parsed_p, timeout=0.8)
+        if rtsp_url and parsed_p and parsed_p not in ("/", "/live", "/onvif1"):
+            is_ok, code, target_url, realm, nonce = await rtsp_resolver.probe_rtsp_path(
+                feed.ip, feed.port, parsed_p, creds=existing_creds, timeout=0.8
+            )
             if is_ok:
+                rtsp_url = target_url
                 current_works = True
             elif code == 401:
                 # Camera requires authentication: retry with default password list based on vendor
@@ -439,7 +483,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     ip=feed.ip,
                     port=feed.port,
                     path=parsed_p,
-                    product=feed.product or "",
+                    product=product_hint,
                     realm=realm,
                     nonce=nonce,
                     timeout=1.0
@@ -454,7 +498,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     current_works = True
 
         if not current_works:
-            resolve_res = await rtsp_resolver.resolve_camera(feed.ip, feed.port, feed.product or "", rtsp_url, continuous=True)
+            resolve_res = await rtsp_resolver.resolve_camera(feed.ip, feed.port, product_hint, rtsp_url, continuous=True)
             if resolve_res.get("resolved"):
                 if resolve_res.get("protocol") == "rtsp":
                     rtsp_url = resolve_res["stream_url"]
@@ -515,26 +559,23 @@ async def proxy_camera_stream(
     Proxies live HTTP MJPEG video streams or JPEG snapshots directly to the frontend.
     Handles persistent multipart video streams and eliminates CORS / mixed-content blocks.
     """
-    target_url = url
+    target_url = _clean_http_url(url) if url else None
+    feed = None
     if feed_id:
         res = await db.execute(select(CameraFeedModel).where(CameraFeedModel.id == feed_id))
         feed = res.scalar_one_or_none()
         if feed:
             scheme = "https" if feed.port == 443 or (feed.rtsp_url and feed.rtsp_url.startswith("https://")) else "http"
-            is_valid_specific = (
-                feed.screenshot_url
-                and "unsplash" not in feed.screenshot_url
-                and not feed.screenshot_url.rstrip("/").endswith(f":{feed.port}")
-            )
-            if is_valid_specific:
-                target_url = feed.screenshot_url
-            elif feed.rtsp_url.startswith(("http://", "https://")) and not feed.rtsp_url.rstrip("/").endswith(f":{feed.port}"):
-                target_url = feed.rtsp_url
+            if _is_specific_http_stream_url(feed.screenshot_url, feed.port):
+                target_url = _clean_http_url(feed.screenshot_url)
+            elif _is_specific_http_stream_url(feed.rtsp_url, feed.port):
+                target_url = _clean_http_url(feed.rtsp_url)
             else:
                 # Auto-resolve live MJPEG or snapshot endpoint on the fly
-                resolved = await rtsp_resolver.resolve_camera(feed.ip, feed.port, feed.product or "", feed.rtsp_url)
+                product_hint = f"{feed.product or ''} {feed.banner or ''}".strip()
+                resolved = await rtsp_resolver.resolve_camera(feed.ip, feed.port, product_hint, feed.rtsp_url)
                 if resolved.get("resolved") and resolved.get("stream_type") in ("mjpeg", "jpeg"):
-                    target_url = resolved["stream_url"]
+                    target_url = _clean_http_url(resolved["stream_url"])
                     feed.screenshot_url = target_url
                     feed.rtsp_url = target_url
                     await db.commit()
@@ -544,12 +585,17 @@ async def proxy_camera_stream(
         scheme = "https" if port == 443 else "http"
         resolved = await rtsp_resolver.resolve_camera(ip, port)
         if resolved.get("resolved") and resolved.get("stream_type") in ("mjpeg", "jpeg"):
-            target_url = resolved["stream_url"]
+            target_url = _clean_http_url(resolved["stream_url"])
         else:
             target_url = f"{scheme}://{ip}:{port}/"
 
     if not target_url:
         raise HTTPException(status_code=400, detail="Missing target stream URL or feed_id")
+
+    # Replace dynamic Mobotix/Axis COUNTER token with current timestamp so fresh frames are served
+    if "COUNTER" in target_url:
+        import time
+        target_url = target_url.replace("COUNTER", str(int(time.time() * 1000)))
 
     candidates = [target_url]
     if target_url.startswith("https://") and (":443" in target_url or (feed_id and feed and feed.port == 443)):
@@ -733,8 +779,8 @@ async def resolve_camera_rtsp(
             raise HTTPException(status_code=404, detail="Feed ID not found")
         ip = feed.ip
         port = feed.port
-        product = feed.product or ""
-        current_url = feed.rtsp_url or ""
+        product = f"{payload.product or feed.product or ''} {feed.banner or ''}".strip()
+        current_url = payload.current_url or feed.rtsp_url or ""
 
     if not ip:
         raise HTTPException(status_code=400, detail="Missing target IP address or feed_id")
@@ -775,24 +821,18 @@ async def retry_default_creds_route(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Retry connecting to RTSP stream with a default password list based on vendor table.
-    Filters by vendor if found in:
-    Hikvision: admin | (blank) or 12345
-    Dahua: admin | admin
-    Axis: root | (blank)
-    Amcrest: admin | admin
-    Lorex: admin | (blank) or 12345
-    Foscam: admin | admin
-    Reolink: admin | (blank)
-    Hanwha (Samsung): admin | 4356
-    Bosch: admin | admin
-    Vivotek: admin | (blank)
+    Retry connecting to RTSP stream with default credentials sourced from
+    the vendor profiles in rtsp_resolver (VENDOR_RTSP_PROFILES).
     """
     feed = None
     ip = payload.ip
     port = payload.port or 554
     product = payload.product or ""
     path = payload.path or ""
+
+    if not path and payload.current_url:
+        parsed_curr = urlparse(payload.current_url)
+        path = parsed_curr.path + (f"?{parsed_curr.query}" if parsed_curr.query else "")
 
     if payload.feed_id:
         res = await db.execute(select(CameraFeedModel).where(CameraFeedModel.id == payload.feed_id))
@@ -801,9 +841,10 @@ async def retry_default_creds_route(
             raise HTTPException(status_code=404, detail="Feed ID not found")
         ip = feed.ip
         port = feed.port
-        product = payload.product or feed.product or ""
+        product = f"{payload.product or feed.product or ''} {feed.banner or ''}".strip()
         if not path and feed.rtsp_url:
-            path = urlparse(feed.rtsp_url).path
+            parsed_feed_url = urlparse(feed.rtsp_url)
+            path = parsed_feed_url.path + (f"?{parsed_feed_url.query}" if parsed_feed_url.query else "")
 
     if not ip:
         raise HTTPException(status_code=400, detail="Missing target IP address or feed_id")

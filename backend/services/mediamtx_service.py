@@ -55,6 +55,8 @@ class MediaMTXService:
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
             }
+            if not is_win:
+                popen_kwargs["start_new_session"] = True
             env = os.environ.copy()
             if settings.MEDIAMTX_PUBLIC_HOST:
                 env["MTX_WEBRTCADDITIONALHOSTS"] = settings.MEDIAMTX_PUBLIC_HOST
@@ -82,7 +84,14 @@ class MediaMTXService:
                     self.process.terminate()
                 else:
                     import signal
-                    os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                    try:
+                        pgid = os.getpgid(self.process.pid)
+                        if pgid != os.getpgrp():
+                            os.killpg(pgid, signal.SIGTERM)
+                        else:
+                            self.process.terminate()
+                    except Exception:
+                        self.process.terminate()
                 self.process = None
                 logger.info("MediaMTX stopped.")
             except Exception as e:
@@ -95,7 +104,7 @@ class MediaMTXService:
         CCTV pattern generation with realistic camera timestamps and OSD overlays.
         For real user streams, pulls RTSP with on-demand connection.
         """
-        clean_path = "".join(c if c.isalnum() or c in "-_" else "_" for c in stream_path)
+        clean_path = re.sub(r"[^a-zA-Z0-9_-]", "_", stream_path).strip("_")
 
         # Check if the URL is a demo/simulated feed or real stream
         is_demo_stream = any(k in rtsp_url.lower() for k in ["rtsp.stream", "pattern", "demo", "simulated", "198.51.100", "203.0.113", "192.0.2"])
@@ -105,8 +114,8 @@ class MediaMTXService:
             label = clean_path.replace("_", "-").upper()
             ffmpeg_cmd = (
                 f"ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=15 "
-                f"-vf \"drawtext=text='[EXPOSED RTSP CCTV] {label} %{{localtime\\:%Y-%m-%d %H\\\\\\:%M\\\\\\:%S}}':fontcolor=white:fontsize=22:box=1:boxcolor=black@0.6:x=20:y=20\" "
-                f"-c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p "
+                f"-vf \"drawtext=text='[EXPOSED RTSP CCTV] {label} %{{localtime}}':fontcolor=white:fontsize=22:box=1:boxcolor=black@0.6:x=20:y=20\" "
+                f"-c:v libx264 -g 15 -preset ultrafast -tune zerolatency -pix_fmt yuv420p "
                 f"-rtsp_transport tcp -f rtsp rtsp://127.0.0.1:{self.rtsp_port}/{clean_path}"
             )
             payload = {
@@ -186,6 +195,7 @@ class MediaMTXService:
                 if res.status_code == 200:
                     data = res.json()
                     ready = data.get("ready", False)
+                    tracks = data.get("tracks", [])
                     tracks2 = data.get("tracks2", [])
                     res_str = ""
                     codec_str = ""
@@ -195,11 +205,13 @@ class MediaMTXService:
                         props = t0.get("codecProps", {})
                         if props.get("width") and props.get("height"):
                             res_str = f"{props['width']}x{props['height']}"
+                    if not codec_str and tracks:
+                        codec_str = str(tracks[0])
                     return {
                         "ready": ready,
-                        "online": data.get("online", False),
+                        "online": data.get("online", data.get("available", ready)),
                         "bytes_received": data.get("bytesReceived", 0),
-                        "tracks": data.get("tracks", []),
+                        "tracks": tracks,
                         "codec": codec_str,
                         "resolution": res_str,
                         "readers": len(data.get("readers", []))

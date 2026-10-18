@@ -282,11 +282,27 @@ class StreamPlayer {
       return;
     }
 
+    if (streamInfo && streamInfo.status === 'offline') {
+      this.setStatus('OFFLINE', streamInfo.message || `${protoLabel} camera port ${portNum} closed or stream unavailable.`);
+      if (this.techProto) this.techProto.textContent = `Port ${portNum} Unreachable (Offline)`;
+      return;
+    }
+
+    if (streamInfo && streamInfo.rtsp_source && !streamInfo.rtsp_source.includes('unsplash')) {
+      feed.rtsp_url = streamInfo.rtsp_source;
+      feed.screenshot_url = streamInfo.rtsp_source;
+      if (this.auditRtsp) this.auditRtsp.textContent = streamInfo.rtsp_source;
+    }
+
     // Proxy stream URL: feeds live MJPEG or JPEG snapshots through backend proxy
     const proxyStreamUrl = `/api/proxy/stream?feed_id=${feed.id}&_ts=${Date.now()}`;
     const directFallbackUrl = (streamInfo && streamInfo.rtsp_source && !streamInfo.rtsp_source.includes('unsplash'))
       ? streamInfo.rtsp_source
       : (customUrl || (feed.screenshot_url && !feed.screenshot_url.includes('unsplash') ? feed.screenshot_url : `${scheme}://${feed.ip}:${portNum}/`));
+
+    const effectiveCheckUrl = (directFallbackUrl || '').toLowerCase();
+    const isContinuousMjpeg = (streamInfo && streamInfo.stream_type === 'mjpeg') ||
+      ['mjpg', 'mjpeg', 'nphmotionjpeg', 'video.cgi', 'faststream', 'videostream.cgi'].some(k => effectiveCheckUrl.includes(k));
 
     this.snapshotEl.onload = () => {
       // Discard event if user has switched to another camera in the meantime
@@ -295,7 +311,11 @@ class StreamPlayer {
       if (this.webConsoleDisplay) this.webConsoleDisplay.style.display = 'none';
       this.snapshotEl.style.display = 'block';
       this.setStatus(`LIVE ${protoLabel}`);
-      if (this.techProto) this.techProto.textContent = `${protoLabel}/MJPEG Live Active (Port ${portNum})`;
+      if (this.techProto) {
+        this.techProto.textContent = isContinuousMjpeg
+          ? `${protoLabel}/MJPEG Live Active (Port ${portNum})`
+          : `${protoLabel}/JPEG Live Snapshot (Port ${portNum})`;
+      }
     };
 
     let triedFallback = false;
@@ -329,7 +349,7 @@ class StreamPlayer {
     this.refreshInterval = setInterval(() => {
       if (this.currentFeed && this.activeFeedId === targetId && this.snapshotEl && this.isSnapshotLoaded) {
         // Only refresh if not an infinite multipart MJPEG stream
-        if (!feed.screenshot_url || (!feed.screenshot_url.includes('video.cgi') && !feed.screenshot_url.includes('faststream') && !feed.screenshot_url.includes('video.mjpg'))) {
+        if (!isContinuousMjpeg) {
           const sep = proxyStreamUrl.includes('?') ? '&' : '?';
           this.snapshotEl.src = `${proxyStreamUrl}${sep}_r=${Date.now()}`;
         }
@@ -369,11 +389,13 @@ class StreamPlayer {
     return null;
   }
 
-  async playFeed(feed) {
+  async playFeed(feed, isRetry = false) {
     this.stop();
     this.currentFeed = feed;
     this.activeFeedId = feed.id;
-    this.hasAutoResolved = false;
+    if (!isRetry) {
+      this.hasAutoResolved = false;
+    }
 
     const targetId = feed.id;
     const signal = this.abortController.signal;
@@ -435,7 +457,7 @@ class StreamPlayer {
     };
     this.snapshotEl.src = fallbackThumb;
 
-    // Safety timeout: if RTSP connection fails, attempt automatic background vendor subpath resolution
+    // Safety timeout: if backend /api/streams/play hangs, attempt fallback vendor resolution
     this.connectTimeoutTimer = setTimeout(async () => {
       if (this.activeFeedId !== targetId) return;
       if (this.badgeEl && this.badgeEl.textContent.includes('CONNECTING')) {
@@ -447,7 +469,7 @@ class StreamPlayer {
             const retryRes = await this.retryWithDefaultCredentials(feed);
             if (this.activeFeedId !== targetId) return;
             if (retryRes && retryRes.resolved) {
-              this.playFeed(feed);
+              this.playFeed(feed, true);
               return;
             }
           } catch (e) {
@@ -480,7 +502,7 @@ class StreamPlayer {
                   this.playHttpStream(feed, resData.stream_url);
                   return;
                 }
-                this.playFeed(feed);
+                this.playFeed(feed, true);
                 return;
               }
             }
@@ -501,7 +523,7 @@ class StreamPlayer {
           if (this.techProto) this.techProto.textContent = `WAN Port ${portNum} Unreachable`;
         }
       }
-    }, 4500);
+    }, 10000);
 
     try {
       const res = await fetch('/api/streams/play', {
@@ -529,6 +551,18 @@ class StreamPlayer {
       if (this.activeFeedId !== targetId) return;
 
       console.log('Stream route response:', streamData);
+
+      if (streamData.rtsp_source && streamData.rtsp_source !== feed.rtsp_url) {
+        feed.rtsp_url = streamData.rtsp_source;
+        if (this.auditRtsp) this.auditRtsp.textContent = streamData.rtsp_source;
+        if (streamData.rtsp_source.includes('@')) {
+          feed.auth_status = 'default_creds';
+          if (this.techAuth) {
+            this.techAuth.textContent = 'DEFAULT CREDS';
+            this.techAuth.className = 'value text-warning';
+          }
+        }
+      }
 
       // If backend auto-resolved to an HTTP stream (port 8000 or HTTP fallback)
       if (streamData.status === 'http_stream' || !streamData.webrtc_url) {
@@ -637,7 +671,7 @@ class StreamPlayer {
             const retryRes = await this.retryWithDefaultCredentials(feed);
             if (this.activeFeedId !== targetId) return;
             if (retryRes && retryRes.resolved) {
-              this.playFeed(feed);
+              this.playFeed(feed, true);
               return;
             }
           } catch (e) {
@@ -667,7 +701,7 @@ class StreamPlayer {
                   this.playHttpStream(feed, resData.stream_url);
                   return;
                 }
-                this.playFeed(feed);
+                this.playFeed(feed, true);
                 return;
               }
             }
