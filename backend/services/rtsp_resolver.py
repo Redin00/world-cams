@@ -10,31 +10,6 @@ from backend.config import get_legacy_ssl_context
 
 logger = logging.getLogger("worldcams.resolver")
 
-# Vendor default credential table according to manufacturer specifications:
-# Hikvision: admin | (blank) or 12345
-# Dahua: admin | admin
-# Axis: root | (blank)
-# Amcrest: admin | admin
-# Lorex: admin | (blank) or 12345
-# Foscam: admin | admin
-# Reolink: admin | (blank)
-# Hanwha (Samsung): admin | 4356
-# Bosch: admin | admin
-# Vivotek: admin | (blank)
-VENDOR_DEFAULT_CREDS_TABLE: Dict[str, List[Tuple[str, str]]] = {
-    "hikvision": [("admin", ""), ("admin", "12345")],
-    "dahua": [("admin", "admin")],
-    "axis": [("root", "")],
-    "amcrest": [("admin", "admin")],
-    "lorex": [("admin", ""), ("admin", "12345")],
-    "foscam": [("admin", "admin")],
-    "reolink": [("admin", "")],
-    "hanwha": [("admin", "4356")],
-    "samsung": [("admin", "4356")],
-    "bosch": [("admin", "admin")],
-    "vivotek": [("admin", "")],
-}
-
 # Complete IP Camera RTSP & HTTP streaming profiles based on SmartRTSP guide
 # (https://www.smartrtsp.com/guides/rtsp-url-list & https://www.smartrtsp.com/guides/ip-camera-rtsp-url-table)
 VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
@@ -432,9 +407,9 @@ class VendorRtspResolver:
             return "amcrest"
         if "lorex" in p:
             return "lorex"
-        if any(k in p for k in ["hikvision", "annke", "swann", "bluestar", "tovision", "digital watchdog", "flir"]):
+        if any(k in p for k in ["hikvision", "annke", "swann", "bluestar", "tovision", "digital watchdog", "flir", "hiwatch"]):
             return "hikvision"
-        if any(k in p for k in ["dahua", "imou"]):
+        if any(k in p for k in ["dahua", "imou", "icrealtime"]):
             return "dahua"
         if "reolink" in p:
             return "reolink"
@@ -442,7 +417,7 @@ class VendorRtspResolver:
             return "tapo"
         if any(k in p for k in ["uniview", "unv"]):
             return "uniview"
-        if any(k in p for k in ["samsung", "hanwha", "techwin", "wisenet"]):
+        if any(k in p for k in ["samsung", "hanwha", "techwin", "wisenet", "ipolis"]):
             return "hanwha"
         if "axis" in p:
             return "axis"
@@ -482,39 +457,19 @@ class VendorRtspResolver:
 
     def get_vendor_credentials(self, product_or_vendor: str) -> List[Tuple[str, str]]:
         """
-        Get vendor default credentials list based on detected vendor.
-        Filters by manufacturer if found in the default credentials table:
-        Hikvision: admin | (blank) or 12345
-        Dahua: admin | admin
-        Axis: root | (blank)
-        Amcrest: admin | admin
-        Lorex: admin | (blank) or 12345
-        Foscam: admin | admin
-        Reolink: admin | (blank)
-        Hanwha (Samsung): admin | 4356
-        Bosch: admin | admin
-        Vivotek: admin | (blank)
         Get vendor default credentials list directly from VENDOR_RTSP_PROFILES.
-        Resolves vendor profile key from product name, banner, or vendor string.
+        Resolves vendor profile key from product name, banner, realm, or vendor string.
         """
-        raw = (product_or_vendor or "").lower().strip()
-        if raw in VENDOR_DEFAULT_CREDS_TABLE:
-            return list(VENDOR_DEFAULT_CREDS_TABLE[raw])
         raw_key = (product_or_vendor or "").lower().strip()
         if raw_key in VENDOR_RTSP_PROFILES and "creds" in VENDOR_RTSP_PROFILES[raw_key]:
             return list(VENDOR_RTSP_PROFILES[raw_key]["creds"])
 
         vendor_key = self.detect_vendor_key(product_or_vendor)
-        if vendor_key in VENDOR_DEFAULT_CREDS_TABLE:
-            return list(VENDOR_DEFAULT_CREDS_TABLE[vendor_key])
         profile = VENDOR_RTSP_PROFILES.get(vendor_key)
         if profile and "creds" in profile:
             return list(profile["creds"])
 
-        if vendor_key in VENDOR_RTSP_PROFILES and "creds" in VENDOR_RTSP_PROFILES[vendor_key]:
-            return list(VENDOR_RTSP_PROFILES[vendor_key]["creds"])
-
-        return list(VENDOR_RTSP_PROFILES.get("generic", {}).get("creds", [("admin", "admin"), ("admin", "12345"), ("admin", "")]))
+        return list(VENDOR_RTSP_PROFILES["generic"]["creds"])
 
     async def retry_rtsp_with_default_creds(
         self,
@@ -527,21 +482,29 @@ class VendorRtspResolver:
         timeout: float = 1.2
     ) -> Tuple[bool, str, Optional[Tuple[str, str]]]:
         """
-        Retry connecting to RTSP stream with a default password list filtered by vendor.
-        If realm/nonce are known, tests credentials directly.
-        Otherwise probes the target path or vendor paths to negotiate Digest/Basic auth.
+        Retry connecting to RTSP stream with a default password list filtered by vendor
+        from VENDOR_RTSP_PROFILES.
+        If realm/nonce are known, tests credentials directly on the target path.
+        Otherwise probes the target path and vendor candidate paths to negotiate Digest/Basic auth.
         Returns (is_success, resolved_rtsp_url, matched_credential).
         """
         vendor_key = self.detect_vendor_key(product)
-        creds = self.get_vendor_credentials(product)
+        if vendor_key == "generic" and realm:
+            realm_vendor = self.detect_vendor_key(realm)
+            if realm_vendor != "generic":
+                vendor_key = realm_vendor
 
-        target_path = path or ""
-        if not target_path or target_path in ("/", "/live"):
-            profile = VENDOR_RTSP_PROFILES.get(vendor_key, VENDOR_RTSP_PROFILES["generic"])
-            target_path = profile.get("paths", ["/Streaming/Channels/101"])[0]
+        creds = list(self.get_vendor_credentials(vendor_key if vendor_key != "generic" else product))
+        profile = VENDOR_RTSP_PROFILES.get(vendor_key, VENDOR_RTSP_PROFILES["generic"])
+        default_vendor_paths = profile.get("paths", ["/Streaming/Channels/101"])
 
-        # 1. If realm and nonce are already provided from a 401 probe
-        if realm and nonce:
+        clean_path = (path or "").strip()
+        if clean_path and not clean_path.startswith("/"):
+            clean_path = "/" + clean_path
+
+        # 1. If realm or nonce are already known from a prior 401 response on a specific path
+        if realm is not None or nonce is not None:
+            target_path = clean_path if (clean_path and clean_path not in ("/", "/live")) else default_vendor_paths[0]
             for cred in creds:
                 success, auth_url = await self.probe_rtsp_digest_auth(
                     ip, port, target_path, cred, realm, nonce, timeout=timeout
@@ -549,18 +512,66 @@ class VendorRtspResolver:
                 if success:
                     logger.info(f"[Auto-Auth] RTSP {ip}:{port}{target_path} authenticated for {vendor_key.upper()} with default credentials: {cred[0]}:***")
                     return True, auth_url, cred
+            return False, f"rtsp://{ip}:{port}{target_path}", None
 
-        # 2. If realm/nonce not provided or direct probes didn't succeed, probe path with each cred using two-step CSeq handshake
-        for cred in creds:
+        # 2. If realm/nonce not yet known, build candidate paths for the vendor
+        paths_to_try: List[str] = []
+        # If caller supplied a specific non-placeholder path, test it first
+        if clean_path and clean_path not in ("/", "/live", "/onvif1"):
+            paths_to_try.append(clean_path)
+
+        # Add vendor profile paths (up to top 4 paths)
+        for vp in default_vendor_paths[:4]:
+            if vp not in paths_to_try:
+                paths_to_try.append(vp)
+
+        if clean_path == "/onvif1" and "/onvif1" not in paths_to_try:
+            paths_to_try.append("/onvif1")
+
+        fallback_path = paths_to_try[0] if paths_to_try else "/Streaming/Channels/101"
+
+        for cand_path in paths_to_try:
+            if not creds:
+                break
+            # Probe path with first credential (performs CSeq 1 -> 401 -> CSeq 2 handshake)
             is_ok, code, auth_url, cur_realm, cur_nonce = await self.probe_rtsp_path(
-                ip, port, target_path, creds=cred, timeout=timeout
+                ip, port, cand_path, creds=creds[0], timeout=timeout
             )
             if is_ok:
-                logger.info(f"[Auto-Auth] RTSP {ip}:{port}{target_path} authenticated for {vendor_key.upper()} with default credentials: {cred[0]}:***")
-                return True, auth_url, cred
+                # Ensure URL includes credentials if matched
+                if "@" not in auth_url:
+                    user, pwd = creds[0]
+                    auth_url = f"rtsp://{user}:{pwd}@{ip}:{port}{cand_path}"
+                logger.info(f"[Auto-Auth] RTSP {ip}:{port}{cand_path} authenticated for {vendor_key.upper()} with default credentials: {creds[0][0]}:***")
+                return True, auth_url, creds[0]
 
-        # None of the default credentials succeeded
-        return False, f"rtsp://{ip}:{port}{target_path}", None
+            if code == 401:
+                # If vendor was generic, check if the 401 realm identifies the manufacturer
+                active_creds = list(creds)
+                if vendor_key == "generic" and cur_realm:
+                    detected = self.detect_vendor_key(cur_realm)
+                    if detected != "generic":
+                        vendor_key = detected
+                        for vc in self.get_vendor_credentials(detected):
+                            if vc not in active_creds:
+                                active_creds.append(vc)
+
+                # Test remaining credentials on this verified 401 endpoint
+                for cred in active_creds[1:]:
+                    success, next_auth_url = await self.probe_rtsp_digest_auth(
+                        ip, port, cand_path, cred, cur_realm, cur_nonce, timeout=timeout
+                    )
+                    if success:
+                        logger.info(f"[Auto-Auth] RTSP {ip}:{port}{cand_path} authenticated for {vendor_key.upper()} with default credentials: {cred[0]}:***")
+                        return True, next_auth_url, cred
+                # All vendor credentials were tested against the active 401 endpoint
+                return False, f"rtsp://{ip}:{port}{cand_path}", None
+
+            if code == 0:
+                # Host/port unreachable or timed out; do not waste time on further paths
+                break
+
+        return False, f"rtsp://{ip}:{port}{fallback_path}", None
 
     @staticmethod
     def _compute_digest(method: str, uri: str, user: str, pwd: str, realm: str, nonce: str) -> str:
@@ -580,7 +591,7 @@ class VendorRtspResolver:
     ) -> Tuple[bool, int, str, Optional[str], Optional[str]]:
         """
         Lightweight async socket probe using RTSP DESCRIBE.
-        Handles both unauthenticated access and RFC standard RTSP Digest Authentication.
+        Handles unauthenticated access, RFC standard RTSP Digest Authentication, and Basic Authentication.
         Returns (is_success, http_code, target_rtsp_url, realm, nonce).
         """
         uri = f"rtsp://{host}:{port}{path}"
@@ -612,20 +623,25 @@ class VendorRtspResolver:
                     pass
                 return True, 200, uri, None, None
 
-            # If rejected with 401 Unauthorized, extract Digest realm and nonce
+            # If rejected with 401 Unauthorized, extract Digest realm and nonce (or Basic realm)
             realm, nonce = None, None
             if "401 Unauthorized" in resp_str:
-                realm_m = re.search(r'realm="([^"]+)"', resp_str)
-                nonce_m = re.search(r'nonce="([^"]+)"', resp_str)
+                realm_m = re.search(r'realm="([^"]*)"', resp_str, re.IGNORECASE)
+                nonce_m = re.search(r'nonce="([^"]+)"', resp_str, re.IGNORECASE)
                 if realm_m:
                     realm = realm_m.group(1)
                 if nonce_m:
                     nonce = nonce_m.group(1)
 
-                # If creds provided and realm/nonce available, perform Digest Auth handshake
-                if creds and realm and nonce:
+                # If creds provided, perform Digest or Basic Auth handshake
+                if creds:
                     user, pwd = creds
-                    auth_hdr = self._compute_digest("DESCRIBE", uri, user, pwd, realm, nonce)
+                    if realm is not None and nonce is not None:
+                        auth_hdr = self._compute_digest("DESCRIBE", uri, user, pwd, realm, nonce)
+                    else:
+                        token = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("utf-8")
+                        auth_hdr = f"Basic {token}"
+
                     req_auth = (
                         f"DESCRIBE {uri} RTSP/1.0\r\n"
                         f"CSeq: 2\r\n"
@@ -633,18 +649,34 @@ class VendorRtspResolver:
                         f"User-Agent: {user_agent}\r\n"
                         f"Accept: application/sdp\r\n\r\n"
                     )
-                    writer.write(req_auth.encode())
-                    await writer.drain()
-                    raw_auth = await asyncio.wait_for(reader.read(1024), timeout=timeout)
-                    resp_auth = raw_auth.decode(errors="ignore")
+                    resp_auth = ""
+                    try:
+                        writer.write(req_auth.encode())
+                        await writer.drain()
+                        raw_auth = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+                        resp_auth = raw_auth.decode(errors="ignore")
+                    except Exception:
+                        resp_auth = ""
+
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
                     if resp_auth.startswith("RTSP/1.0 200"):
-                        writer.close()
-                        try:
-                            await writer.wait_closed()
-                        except Exception:
-                            pass
                         auth_url = f"rtsp://{user}:{pwd}@{host}:{port}{path}"
                         return True, 200, auth_url, realm, nonce
+
+                    # If server closed the socket immediately after 401 (resp_auth is empty), retry on a new socket
+                    if not resp_auth:
+                        ok_direct, direct_url = await self.probe_rtsp_digest_auth(
+                            host, port, path, creds, realm, nonce, timeout=timeout
+                        )
+                        if ok_direct:
+                            return True, 200, direct_url, realm, nonce
+
+                    return False, 401, uri, realm, nonce
 
             writer.close()
             try:
@@ -670,19 +702,26 @@ class VendorRtspResolver:
         nonce: Optional[str] = None,
         timeout: float = 1.2
     ) -> Tuple[bool, str]:
-        """Direct single socket probe testing credentials against a known realm/nonce (Digest or Basic)."""
+        """
+        Socket probe testing credentials against a known realm/nonce (Digest or Basic).
+        Also handles RTSP servers that issue a new session nonce per TCP connection by
+        completing CSeq: 2 on the same socket if a fresh nonce is returned.
+        """
         uri = f"rtsp://{host}:{port}{path}"
         user, pwd = creds
-        if realm and nonce:
+        user_agent = "Lavf/58.76.100"
+
+        if realm is not None and nonce is not None:
             auth_hdr = self._compute_digest("DESCRIBE", uri, user, pwd, realm, nonce)
         else:
             token = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("utf-8")
             auth_hdr = f"Basic {token}"
+
         req = (
             f"DESCRIBE {uri} RTSP/1.0\r\n"
             f"CSeq: 1\r\n"
             f"Authorization: {auth_hdr}\r\n"
-            f"User-Agent: Lavf/58.76.100\r\n"
+            f"User-Agent: {user_agent}\r\n"
             f"Accept: application/sdp\r\n\r\n"
         )
         try:
@@ -693,14 +732,49 @@ class VendorRtspResolver:
             writer.write(req.encode())
             await writer.drain()
             raw = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+            resp = raw.decode(errors="ignore")
+
+            if resp.startswith("RTSP/1.0 200"):
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                return True, f"rtsp://{user}:{pwd}@{host}:{port}{path}"
+
+            # If server issued a fresh per-connection Digest nonce on CSeq: 1, authenticate on CSeq: 2
+            if "401 Unauthorized" in resp:
+                new_realm_m = re.search(r'realm="([^"]*)"', resp, re.IGNORECASE)
+                new_nonce_m = re.search(r'nonce="([^"]+)"', resp, re.IGNORECASE)
+                new_realm = new_realm_m.group(1) if new_realm_m else (realm or "")
+                new_nonce = new_nonce_m.group(1) if new_nonce_m else None
+
+                if new_nonce and new_nonce != nonce:
+                    auth_hdr2 = self._compute_digest("DESCRIBE", uri, user, pwd, new_realm, new_nonce)
+                    req2 = (
+                        f"DESCRIBE {uri} RTSP/1.0\r\n"
+                        f"CSeq: 2\r\n"
+                        f"Authorization: {auth_hdr2}\r\n"
+                        f"User-Agent: {user_agent}\r\n"
+                        f"Accept: application/sdp\r\n\r\n"
+                    )
+                    writer.write(req2.encode())
+                    await writer.drain()
+                    raw2 = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+                    resp2 = raw2.decode(errors="ignore")
+                    if resp2.startswith("RTSP/1.0 200"):
+                        writer.close()
+                        try:
+                            await writer.wait_closed()
+                        except Exception:
+                            pass
+                        return True, f"rtsp://{user}:{pwd}@{host}:{port}{path}"
+
             writer.close()
             try:
                 await writer.wait_closed()
             except Exception:
                 pass
-            resp = raw.decode(errors="ignore")
-            if resp.startswith("RTSP/1.0 200"):
-                return True, f"rtsp://{user}:{pwd}@{host}:{port}{path}"
         except Exception:
             pass
         return False, ""
@@ -764,11 +838,11 @@ class VendorRtspResolver:
         # Build prioritized unique list of candidate paths:
         candidate_paths: List[str] = []
 
-        # 1. If current_url has a specific path (and not a generic /live), check it first
+        # 1. If current_url has a specific path (and not a generic /live or /onvif1 placeholder), check it first
         if current_url:
             try:
                 parsed = urlparse(current_url)
-                if parsed.path and parsed.path not in ("/", "/live", ""):
+                if parsed.path and parsed.path not in ("/", "/live", "/onvif1", ""):
                     full_p = parsed.path + (f"?{parsed.query}" if parsed.query else "")
                     candidate_paths.append(full_p)
             except Exception:
@@ -793,7 +867,7 @@ class VendorRtspResolver:
                     creds_list.append(c)
 
         tested_count = 0
-        auth_required_candidates: List[Tuple[str, str, str]] = []  # (path, realm, nonce)
+        auth_required_candidates: List[Tuple[str, Optional[str], Optional[str]]] = []  # (path, realm, nonce)
 
         # =====================================================================
         # Phase 1: RTSP Probing (Ports 554, 8554 or explicit rtsp:// URLs)
@@ -823,7 +897,7 @@ class VendorRtspResolver:
                                 "auth": "unauthenticated",
                                 "message": f"Resolved unauthenticated RTSP stream on path {urlparse(url).path}"
                             }
-                        elif code == 401 and realm and nonce:
+                        elif code == 401:
                             p_only = urlparse(url).path + (f"?{urlparse(url).query}" if urlparse(url).query else "")
                             auth_required_candidates.append((p_only, realm, nonce))
 
