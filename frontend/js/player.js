@@ -369,52 +369,13 @@ class StreamPlayer {
     return null;
   }
 
-  fallbackToSnapshotOrOffline(feed, customMsg = null) {
-    if (this.activeFeedId !== feed.id) return;
-    if (this.telemetryInterval) {
-      clearInterval(this.telemetryInterval);
-      this.telemetryInterval = null;
-    }
-    if (this.connectTimeoutTimer) {
-      clearTimeout(this.connectTimeoutTimer);
-      this.connectTimeoutTimer = null;
-    }
-
-    const hasLiveSnapshot = feed.screenshot_url && !feed.screenshot_url.includes('unsplash');
-    if (this.isSnapshotLoaded && hasLiveSnapshot) {
-      if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
-      if (this.snapshotEl) {
-        this.snapshotEl.src = feed.screenshot_url;
-        this.snapshotEl.style.display = 'block';
-      }
-      this.setStatus('SNAPSHOT (RTSP BLOCKED)', customMsg || `RTSP stream stalled on port ${feed.port}. Falling back to HTTP snapshot.`);
-      if (this.techProto) this.techProto.textContent = `HTTP Snapshot Active (RTSP ${feed.port} Filtered/Stalled)`;
-    } else {
-      if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
-      this.setStatus('RTSP STREAM OFFLINE', customMsg || `Remote camera on WAN port ${feed.port} not serving decodable video.`);
-      if (this.techProto) this.techProto.textContent = `Port ${feed.port} Host Unreachable / Filtered`;
-    }
-  }
-
-  async playFeed(feed, isInternalRetry = false) {
+  async playFeed(feed) {
     this.stop();
     this.currentFeed = feed;
+    this.activeFeedId = feed.id;
+    this.hasAutoResolved = false;
+
     const targetId = feed.id;
-
-    // Track active feed and prevent endless recursive retry loops
-    if (this.activeFeedId !== targetId || !isInternalRetry) {
-      this.activeFeedId = targetId;
-      this.hasAutoResolved = false;
-      this.autoRetryCount = 0;
-      this.triedUrls = new Set();
-    } else {
-      this.autoRetryCount = (this.autoRetryCount || 0) + 1;
-    }
-
-    if (feed.rtsp_url) {
-      this.triedUrls.add(feed.rtsp_url);
-    }
-
     const signal = this.abortController.signal;
 
     // 1. Update Title & Technical Metadata Bar
@@ -478,16 +439,15 @@ class StreamPlayer {
     this.connectTimeoutTimer = setTimeout(async () => {
       if (this.activeFeedId !== targetId) return;
       if (this.badgeEl && this.badgeEl.textContent.includes('CONNECTING')) {
-        console.warn('RTSP stream negotiation timeout. Checking if recovery retry needed...');
-        if (!this.hasAutoResolved && (this.autoRetryCount || 0) < 1) {
+        console.warn('RTSP stream negotiation timeout. Attempting automated subpath resolution...');
+        if (!this.hasAutoResolved) {
           this.hasAutoResolved = true;
           this.setStatus('CONNECTING', `Retrying RTSP default credentials for ${feed.product || 'vendor'}...`);
           try {
             const retryRes = await this.retryWithDefaultCredentials(feed);
             if (this.activeFeedId !== targetId) return;
-            if (retryRes && retryRes.resolved && retryRes.stream_url && !this.triedUrls.has(retryRes.stream_url)) {
-              feed.rtsp_url = retryRes.stream_url;
-              this.playFeed(feed, true);
+            if (retryRes && retryRes.resolved) {
+              this.playFeed(feed);
               return;
             }
           } catch (e) {
@@ -514,16 +474,14 @@ class StreamPlayer {
               const resData = await probeRes.json();
               if (this.activeFeedId !== targetId) return;
 
-              if (resData.resolved && resData.stream_url) {
-                if (resData.protocol === 'http' || resData.protocol === 'https') {
+              if (resData.resolved) {
+                feed.rtsp_url = resData.stream_url;
+                if (resData.protocol === 'http') {
                   this.playHttpStream(feed, resData.stream_url);
                   return;
                 }
-                if (!this.triedUrls.has(resData.stream_url)) {
-                  feed.rtsp_url = resData.stream_url;
-                  this.playFeed(feed, true);
-                  return;
-                }
+                this.playFeed(feed);
+                return;
               }
             }
           } catch (e) {
@@ -533,7 +491,15 @@ class StreamPlayer {
           }
         }
 
-        this.fallbackToSnapshotOrOffline(feed, `Camera accessible via HTTP, but RTSP port ${portNum} not responding.`);
+        if (this.activeFeedId !== targetId) return;
+        const hasLiveSnapshot = feed.screenshot_url && !feed.screenshot_url.includes('unsplash');
+        if (this.isSnapshotLoaded && hasLiveSnapshot) {
+          this.setStatus('SNAPSHOT (RTSP BLOCKED)', `Camera accessible via HTTP, but RTSP port ${portNum} filtered.`);
+          if (this.techProto) this.techProto.textContent = `HTTP Snapshot (RTSP ${portNum} Filtered by Firewall)`;
+        } else {
+          this.setStatus('RTSP STREAM OFFLINE', `Remote RTSP port ${portNum} not responding.`);
+          if (this.techProto) this.techProto.textContent = `WAN Port ${portNum} Unreachable`;
+        }
       }
     }, 4500);
 
@@ -663,16 +629,15 @@ class StreamPlayer {
         this.telemetryInterval = null;
         if (this.activeFeedId !== targetId) return;
 
-        console.warn('RTSP stream not ready after verification window. Checking if recovery retry needed...');
-        if (!this.hasAutoResolved && (this.autoRetryCount || 0) < 1) {
+        console.warn('RTSP stream not ready after verification window. Probing alternative vendor paths...');
+        if (!this.hasAutoResolved) {
           this.hasAutoResolved = true;
           this.setStatus('CONNECTING', 'RTSP stream unverified. Retrying vendor credentials...');
           try {
             const retryRes = await this.retryWithDefaultCredentials(feed);
             if (this.activeFeedId !== targetId) return;
-            if (retryRes && retryRes.resolved && retryRes.stream_url && !this.triedUrls.has(retryRes.stream_url)) {
-              feed.rtsp_url = retryRes.stream_url;
-              this.playFeed(feed, true);
+            if (retryRes && retryRes.resolved) {
+              this.playFeed(feed);
               return;
             }
           } catch (e) {
@@ -696,16 +661,14 @@ class StreamPlayer {
             if (probeRes.ok) {
               const resData = await probeRes.json();
               if (this.activeFeedId !== targetId) return;
-              if (resData.resolved && resData.stream_url) {
+              if (resData.resolved) {
+                feed.rtsp_url = resData.stream_url;
                 if (resData.protocol === 'http' || resData.protocol === 'https') {
                   this.playHttpStream(feed, resData.stream_url);
                   return;
                 }
-                if (!this.triedUrls.has(resData.stream_url)) {
-                  feed.rtsp_url = resData.stream_url;
-                  this.playFeed(feed, true);
-                  return;
-                }
+                this.playFeed(feed);
+                return;
               }
             }
           } catch (probeErr) {
@@ -713,8 +676,22 @@ class StreamPlayer {
           }
         }
 
-        // If resolution was already attempted or did not yield a new working stream, fall back immediately
-        this.fallbackToSnapshotOrOffline(feed, `Camera accessible via HTTP, but RTSP port ${feed.port} not delivering frames.`);
+        // If resolution did not yield working RTSP stream, fall back to snapshot or offline
+        if (this.activeFeedId !== targetId) return;
+        const hasLiveSnapshot = feed.screenshot_url && !feed.screenshot_url.includes('unsplash');
+        if (hasLiveSnapshot) {
+          if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
+          if (this.snapshotEl) {
+            this.snapshotEl.src = feed.screenshot_url;
+            this.snapshotEl.style.display = 'block';
+          }
+          this.setStatus('SNAPSHOT (RTSP BLOCKED)', `Camera accessible via HTTP, but RTSP port ${feed.port} not delivering frames.`);
+          if (this.techProto) this.techProto.textContent = `HTTP Snapshot Active (RTSP ${feed.port} Filtered/Stalled)`;
+        } else {
+          if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
+          this.setStatus('RTSP OFFLINE', `Remote camera on port ${feed.port} not transmitting frames.`);
+          if (this.techProto) this.techProto.textContent = `Port ${feed.port} Host Unreachable / Filtered`;
+        }
       }
     }, 900);
   }
