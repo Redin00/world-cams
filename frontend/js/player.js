@@ -337,6 +337,38 @@ class StreamPlayer {
     }, 2500);
   }
 
+  async retryWithDefaultCredentials(feed) {
+    if (!feed) return null;
+    try {
+      const res = await fetch('/api/streams/retry-default-creds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feed_id: feed.id,
+          ip: feed.ip,
+          port: feed.port,
+          product: feed.product,
+          current_url: feed.rtsp_url
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.resolved && data.stream_url) {
+          feed.rtsp_url = data.stream_url;
+          feed.auth_status = 'default_creds';
+          if (this.techAuth) {
+            this.techAuth.textContent = 'DEFAULT CREDS';
+            this.techAuth.className = 'value text-warning';
+          }
+          return data;
+        }
+      }
+    } catch (e) {
+      console.warn('Retry with default credentials error:', e);
+    }
+    return null;
+  }
+
   async playFeed(feed) {
     this.stop();
     this.currentFeed = feed;
@@ -410,6 +442,18 @@ class StreamPlayer {
         console.warn('RTSP stream negotiation timeout. Attempting automated subpath resolution...');
         if (!this.hasAutoResolved) {
           this.hasAutoResolved = true;
+          this.setStatus('CONNECTING', `Retrying RTSP default credentials for ${feed.product || 'vendor'}...`);
+          try {
+            const retryRes = await this.retryWithDefaultCredentials(feed);
+            if (this.activeFeedId !== targetId) return;
+            if (retryRes && retryRes.resolved) {
+              this.playFeed(feed);
+              return;
+            }
+          } catch (e) {
+            console.warn('Credential retry error:', e);
+          }
+
           this.setStatus('CONNECTING', 'Auto-probing working vendor RTSP subpaths...');
           try {
             const probeRes = await fetch('/api/streams/resolve-rtsp', {
@@ -588,6 +632,18 @@ class StreamPlayer {
         console.warn('RTSP stream not ready after verification window. Probing alternative vendor paths...');
         if (!this.hasAutoResolved) {
           this.hasAutoResolved = true;
+          this.setStatus('CONNECTING', 'RTSP stream unverified. Retrying vendor credentials...');
+          try {
+            const retryRes = await this.retryWithDefaultCredentials(feed);
+            if (this.activeFeedId !== targetId) return;
+            if (retryRes && retryRes.resolved) {
+              this.playFeed(feed);
+              return;
+            }
+          } catch (e) {
+            console.warn('Telemetry cred retry error:', e);
+          }
+
           this.setStatus('CONNECTING', 'RTSP stream unverified. Probing candidate vendor subpaths...');
           try {
             const probeRes = await fetch('/api/streams/resolve-rtsp', {

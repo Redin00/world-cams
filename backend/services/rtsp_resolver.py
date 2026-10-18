@@ -10,6 +10,31 @@ from backend.config import get_legacy_ssl_context
 
 logger = logging.getLogger("worldcams.resolver")
 
+# Vendor default credential table according to manufacturer specifications:
+# Hikvision: admin | (blank) or 12345
+# Dahua: admin | admin
+# Axis: root | (blank)
+# Amcrest: admin | admin
+# Lorex: admin | (blank) or 12345
+# Foscam: admin | admin
+# Reolink: admin | (blank)
+# Hanwha (Samsung): admin | 4356
+# Bosch: admin | admin
+# Vivotek: admin | (blank)
+VENDOR_DEFAULT_CREDS_TABLE: Dict[str, List[Tuple[str, str]]] = {
+    "hikvision": [("admin", ""), ("admin", "12345")],
+    "dahua": [("admin", "admin")],
+    "axis": [("root", "")],
+    "amcrest": [("admin", "admin")],
+    "lorex": [("admin", ""), ("admin", "12345")],
+    "foscam": [("admin", "admin")],
+    "reolink": [("admin", "")],
+    "hanwha": [("admin", "4356")],
+    "samsung": [("admin", "4356")],
+    "bosch": [("admin", "admin")],
+    "vivotek": [("admin", "")],
+}
+
 # Complete IP Camera RTSP & HTTP streaming profiles based on SmartRTSP guide
 # (https://www.smartrtsp.com/guides/rtsp-url-list & https://www.smartrtsp.com/guides/ip-camera-rtsp-url-table)
 VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
@@ -26,7 +51,7 @@ VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
             "/onvif1",
             "/live"
         ],
-        "creds": [("admin", "12345"), ("admin", "admin"), ("admin", "123456"), ("admin", "12345a"), ("admin", "")]
+        "creds": [("admin", ""), ("admin", "12345")]
     },
     "dahua": {
         "ports": [554, 8554, 37777],
@@ -39,7 +64,33 @@ VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
             "/onvif1",
             "/live"
         ],
-        "creds": [("admin", "admin"), ("admin", "admin123"), ("admin", "123456"), ("admin", "")]
+        "creds": [("admin", "admin")]
+    },
+    "amcrest": {
+        "ports": [554, 8554, 37777],
+        "paths": [
+            "/cam/realmonitor?channel=1&subtype=0",
+            "/cam/realmonitor?channel=1&subtype=1",
+            "/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif",
+            "/cam/realmonitor?channel=2&subtype=0",
+            "/h264Preview_01",
+            "/onvif1",
+            "/live"
+        ],
+        "creds": [("admin", "admin")]
+    },
+    "lorex": {
+        "ports": [554, 8554, 8000],
+        "paths": [
+            "/cam/realmonitor?channel=1&subtype=0",
+            "/Streaming/Channels/101",
+            "/cam/realmonitor?channel=1&subtype=1",
+            "/Streaming/Channels/102",
+            "/h264Preview_01",
+            "/onvif1",
+            "/live"
+        ],
+        "creds": [("admin", ""), ("admin", "12345")]
     },
     "reolink": {
         "ports": [554, 8554],
@@ -51,7 +102,7 @@ VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
             "/onvif1",
             "/live"
         ],
-        "creds": [("admin", ""), ("admin", "admin"), ("admin", "123456")]
+        "creds": [("admin", "")]
     },
     "tapo": {
         "ports": [554, 8554],
@@ -85,7 +136,7 @@ VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
             "/onvif1",
             "/live"
         ],
-        "creds": [("admin", "4321"), ("admin", "admin"), ("admin", "12345")]
+        "creds": [("admin", "4356")]
     },
     "axis": {
         "ports": [554, 8554, 80, 8080, 8000],
@@ -97,7 +148,7 @@ VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
             "/axis-media/media.3gp",
             "/onvif1"
         ],
-        "creds": [("root", "pass"), ("root", "root"), ("admin", "admin"), ("admin", "12345")]
+        "creds": [("root", "")]
     },
     "bosch": {
         "ports": [554, 8554, 80],
@@ -110,7 +161,7 @@ VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
             "/video.mp4",
             "/onvif1"
         ],
-        "creds": [("service", "service"), ("admin", "admin"), ("admin", "12345")]
+        "creds": [("admin", "admin")]
     },
     "vivotek": {
         "ports": [554, 8554],
@@ -121,7 +172,7 @@ VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
             "/video.mp4",
             "/onvif1"
         ],
-        "creds": [("admin", "admin"), ("root", "pass"), ("admin", "12345")]
+        "creds": [("admin", "")]
     },
     "foscam": {
         "ports": [554, 8554, 88],
@@ -134,7 +185,7 @@ VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
             "/onvif1",
             "/live"
         ],
-        "creds": [("admin", ""), ("admin", "admin"), ("admin", "123456")]
+        "creds": [("admin", "admin")]
     },
     "xiongmai": {
         "ports": [554, 8554, 34567],
@@ -377,9 +428,13 @@ class VendorRtspResolver:
     def detect_vendor_key(self, product_str: str) -> str:
         """Identify manufacturer profile key from product name, banner or vendor string."""
         p = (product_str or "").lower()
-        if any(k in p for k in ["hikvision", "annke", "swann", "lorex", "bluestar", "tovision", "digital watchdog", "flir"]):
+        if "amcrest" in p:
+            return "amcrest"
+        if "lorex" in p:
+            return "lorex"
+        if any(k in p for k in ["hikvision", "annke", "swann", "bluestar", "tovision", "digital watchdog", "flir"]):
             return "hikvision"
-        if any(k in p for k in ["dahua", "amcrest", "imou"]):
+        if any(k in p for k in ["dahua", "imou"]):
             return "dahua"
         if "reolink" in p:
             return "reolink"
@@ -424,6 +479,88 @@ class VendorRtspResolver:
         if any(k in p for k in ["d-link", "dlink"]):
             return "dlink"
         return "generic"
+
+    def get_vendor_credentials(self, product_or_vendor: str) -> List[Tuple[str, str]]:
+        """
+        Get vendor default credentials list based on detected vendor.
+        Filters by manufacturer if found in the default credentials table:
+        Hikvision: admin | (blank) or 12345
+        Dahua: admin | admin
+        Axis: root | (blank)
+        Amcrest: admin | admin
+        Lorex: admin | (blank) or 12345
+        Foscam: admin | admin
+        Reolink: admin | (blank)
+        Hanwha (Samsung): admin | 4356
+        Bosch: admin | admin
+        Vivotek: admin | (blank)
+        Get vendor default credentials list directly from VENDOR_RTSP_PROFILES.
+        Resolves vendor profile key from product name, banner, or vendor string.
+        """
+        raw = (product_or_vendor or "").lower().strip()
+        if raw in VENDOR_DEFAULT_CREDS_TABLE:
+            return list(VENDOR_DEFAULT_CREDS_TABLE[raw])
+        raw_key = (product_or_vendor or "").lower().strip()
+        if raw_key in VENDOR_RTSP_PROFILES and "creds" in VENDOR_RTSP_PROFILES[raw_key]:
+            return list(VENDOR_RTSP_PROFILES[raw_key]["creds"])
+
+        vendor_key = self.detect_vendor_key(product_or_vendor)
+        if vendor_key in VENDOR_DEFAULT_CREDS_TABLE:
+            return list(VENDOR_DEFAULT_CREDS_TABLE[vendor_key])
+        profile = VENDOR_RTSP_PROFILES.get(vendor_key)
+        if profile and "creds" in profile:
+            return list(profile["creds"])
+
+        if vendor_key in VENDOR_RTSP_PROFILES and "creds" in VENDOR_RTSP_PROFILES[vendor_key]:
+            return list(VENDOR_RTSP_PROFILES[vendor_key]["creds"])
+
+        return list(VENDOR_RTSP_PROFILES.get("generic", {}).get("creds", [("admin", "admin"), ("admin", "12345"), ("admin", "")]))
+
+    async def retry_rtsp_with_default_creds(
+        self,
+        ip: str,
+        port: int,
+        path: str = "",
+        product: str = "",
+        realm: Optional[str] = None,
+        nonce: Optional[str] = None,
+        timeout: float = 1.2
+    ) -> Tuple[bool, str, Optional[Tuple[str, str]]]:
+        """
+        Retry connecting to RTSP stream with a default password list filtered by vendor.
+        If realm/nonce are known, tests credentials directly.
+        Otherwise probes the target path or vendor paths to negotiate Digest/Basic auth.
+        Returns (is_success, resolved_rtsp_url, matched_credential).
+        """
+        vendor_key = self.detect_vendor_key(product)
+        creds = self.get_vendor_credentials(product)
+
+        target_path = path or ""
+        if not target_path or target_path in ("/", "/live"):
+            profile = VENDOR_RTSP_PROFILES.get(vendor_key, VENDOR_RTSP_PROFILES["generic"])
+            target_path = profile.get("paths", ["/Streaming/Channels/101"])[0]
+
+        # 1. If realm and nonce are already provided from a 401 probe
+        if realm and nonce:
+            for cred in creds:
+                success, auth_url = await self.probe_rtsp_digest_auth(
+                    ip, port, target_path, cred, realm, nonce, timeout=timeout
+                )
+                if success:
+                    logger.info(f"[Auto-Auth] RTSP {ip}:{port}{target_path} authenticated for {vendor_key.upper()} with default credentials: {cred[0]}:***")
+                    return True, auth_url, cred
+
+        # 2. If realm/nonce not provided or direct probes didn't succeed, probe path with each cred using two-step CSeq handshake
+        for cred in creds:
+            is_ok, code, auth_url, cur_realm, cur_nonce = await self.probe_rtsp_path(
+                ip, port, target_path, creds=cred, timeout=timeout
+            )
+            if is_ok:
+                logger.info(f"[Auto-Auth] RTSP {ip}:{port}{target_path} authenticated for {vendor_key.upper()} with default credentials: {cred[0]}:***")
+                return True, auth_url, cred
+
+        # None of the default credentials succeeded
+        return False, f"rtsp://{ip}:{port}{target_path}", None
 
     @staticmethod
     def _compute_digest(method: str, uri: str, user: str, pwd: str, realm: str, nonce: str) -> str:
@@ -529,14 +666,18 @@ class VendorRtspResolver:
         port: int,
         path: str,
         creds: Tuple[str, str],
-        realm: str,
-        nonce: str,
+        realm: Optional[str] = None,
+        nonce: Optional[str] = None,
         timeout: float = 1.2
     ) -> Tuple[bool, str]:
-        """Direct single socket probe testing credentials against a known realm/nonce."""
+        """Direct single socket probe testing credentials against a known realm/nonce (Digest or Basic)."""
         uri = f"rtsp://{host}:{port}{path}"
         user, pwd = creds
-        auth_hdr = self._compute_digest("DESCRIBE", uri, user, pwd, realm, nonce)
+        if realm and nonce:
+            auth_hdr = self._compute_digest("DESCRIBE", uri, user, pwd, realm, nonce)
+        else:
+            token = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("utf-8")
+            auth_hdr = f"Basic {token}"
         req = (
             f"DESCRIBE {uri} RTSP/1.0\r\n"
             f"CSeq: 1\r\n"
@@ -644,11 +785,14 @@ class VendorRtspResolver:
                 if p not in candidate_paths:
                     candidate_paths.append(p)
 
-        # Build merged credentials list (vendor specific first, then generic defaults)
-        creds_list: List[Tuple[str, str]] = list(profile.get("creds", []))
-        for c in generic_profile.get("creds", []):
-            if c not in creds_list:
-                creds_list.append(c)
+        # Build credentials list: filter by vendor if found in table, otherwise fallback
+        # Build credentials list directly from vendor profile (with generic fallback if undetermined)
+        creds_list: List[Tuple[str, str]] = self.get_vendor_credentials(product or vendor_key)
+        if vendor_key not in VENDOR_DEFAULT_CREDS_TABLE:
+        if vendor_key == "generic":
+            for c in generic_profile.get("creds", []):
+                if c not in creds_list:
+                    creds_list.append(c)
 
         tested_count = 0
         auth_required_candidates: List[Tuple[str, str, str]] = []  # (path, realm, nonce)
@@ -689,28 +833,30 @@ class VendorRtspResolver:
                 if auth_required_candidates:
                     break
 
-            # If any candidate paths responded with 401 Unauthorized, test default factory credentials
+            # If any candidate paths responded with 401 Unauthorized, test default vendor credentials
             if auth_required_candidates and creds_list:
-                target_p, target_realm, target_nonce = auth_required_candidates[0]
-                logger.info(f"Testing default vendor credentials on 401 endpoint: {target_p} (Realm: {target_realm})...")
-                
-                auth_tasks = [
-                    self.probe_rtsp_digest_auth(ip, port, target_p, cred, target_realm, target_nonce, timeout=1.2)
-                    for cred in creds_list[:10]
-                ]
-                auth_results = await asyncio.gather(*auth_tasks, return_exceptions=True)
-                tested_count += len(auth_tasks)
-
-                for a_res in auth_results:
-                    if isinstance(a_res, tuple) and a_res[0]:
+                for target_p, target_realm, target_nonce in auth_required_candidates[:3]:
+                    logger.info(f"Testing default vendor credentials on 401 endpoint: {target_p} (Vendor: {vendor_key.upper()}, Realm: {target_realm})...")
+                    retry_ok, auth_url, used_cred = await self.retry_rtsp_with_default_creds(
+                        ip=ip,
+                        port=port,
+                        path=target_p,
+                        product=product or vendor_key,
+                        realm=target_realm,
+                        nonce=target_nonce,
+                        timeout=1.2
+                    )
+                    tested_count += len(creds_list)
+                    if retry_ok and used_cred:
                         return {
                             "resolved": True,
                             "protocol": "rtsp",
-                            "stream_url": a_res[1],
+                            "stream_url": auth_url,
                             "vendor": vendor_key,
                             "tested_count": tested_count,
                             "auth": "default_creds",
-                            "message": f"Resolved authenticated RTSP stream with default credentials: {a_res[1]}"
+                            "matched_cred": used_cred,
+                            "message": f"Resolved authenticated RTSP stream with default credentials ({used_cred[0]}:{used_cred[1]}): {auth_url}"
                         }
 
         # =====================================================================

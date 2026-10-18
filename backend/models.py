@@ -100,6 +100,24 @@ class ResolveRtspResponse(BaseModel):
     message: str
     feed_id: Optional[str] = None
 
+class RetryCredentialsRequest(BaseModel):
+    feed_id: Optional[str] = None
+    ip: Optional[str] = None
+    port: Optional[int] = 554
+    path: Optional[str] = ""
+    product: Optional[str] = ""
+    current_url: Optional[str] = ""
+
+class RetryCredentialsResponse(BaseModel):
+    resolved: bool
+    stream_url: str
+    vendor: str
+    username: Optional[str] = None
+    auth_status: Optional[str] = None
+    tested_count: int = 0
+    message: str
+    feed_id: Optional[str] = None
+
 class ShodanSearchQuery(BaseModel):
     query: str = 'port:554 has_screenshot:true'
     limit: int = 8000

@@ -129,6 +129,46 @@ async def test_full_pipeline():
         assert res.status_code in (200, 302, 301), f"Proxy failed: status={res.status_code}"
         print(f"    -> Proxy stream active: status={res.status_code}, content-type={res.headers.get('content-type')}")
 
+        # 11. Vendor Default Credential Table & Retry Verification Test
+        print("[*] Testing Vendor Default Password Table & /api/streams/retry-default-creds...")
+        from backend.services.rtsp_resolver import rtsp_resolver, VENDOR_DEFAULT_CREDS_TABLE
+
+        expected_table = {
+            "hikvision": [("admin", ""), ("admin", "12345")],
+            "dahua": [("admin", "admin")],
+            "axis": [("root", "")],
+            "amcrest": [("admin", "admin")],
+            "lorex": [("admin", ""), ("admin", "12345")],
+            "foscam": [("admin", "admin")],
+            "reolink": [("admin", "")],
+            "hanwha": [("admin", "4356")],
+            "bosch": [("admin", "admin")],
+            "vivotek": [("admin", "")]
+        }
+
+        for vendor, expected_creds in expected_table.items():
+            creds = rtsp_resolver.get_vendor_credentials(vendor)
+            assert creds == expected_creds, f"Credentials mismatch for {vendor}: expected {expected_creds}, got {creds}"
+            print(f"    -> Vendor {vendor:<16} creds verified: {creds}")
+
+        # Samsung alias check for Hanwha
+        samsung_creds = rtsp_resolver.get_vendor_credentials("Samsung Techwin Camera")
+        assert samsung_creds == [("admin", "4356")], f"Samsung alias mismatch: {samsung_creds}"
+        print("    -> Samsung alias verified: [('admin', '4356')]")
+
+        # Test retry-default-creds endpoint
+        res = await client.post("/api/streams/retry-default-creds", json={
+            "feed_id": sample_feed["id"],
+            "ip": sample_feed["ip"],
+            "port": sample_feed["port"],
+            "product": "Hikvision DS-2CD2042WD-I"
+        })
+        assert res.status_code == 200, f"Retry default creds endpoint failed: {res.text}"
+        retry_data = res.json()
+        assert retry_data["vendor"] == "hikvision"
+        assert retry_data["tested_count"] == 2
+        print(f"    -> /api/streams/retry-default-creds response: vendor={retry_data['vendor']}, tested_count={retry_data['tested_count']}")
+
     print("\n[✓] ALL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":

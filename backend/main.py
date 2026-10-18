@@ -19,6 +19,7 @@ from backend.models import (
     CameraFeedResponse, CameraFeedCreate, CameraFeedUpdate, BatchDeleteRequest,
     FilterQuery, FacetSummary, FacetItem,
     StreamStartRequest, StreamResponse, ResolveRtspRequest, ResolveRtspResponse,
+    RetryCredentialsRequest, RetryCredentialsResponse,
     ShodanSearchQuery, ShodanKeyRequest,
     EducationArticle
 )
@@ -429,8 +430,28 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         parsed_p = urlparse(rtsp_url).path if rtsp_url else ""
         current_works = False
         if rtsp_url and parsed_p and parsed_p not in ("/", "/live"):
-            is_ok, _, _, _, _ = await rtsp_resolver.probe_rtsp_path(feed.ip, feed.port, parsed_p, timeout=0.8)
-            current_works = is_ok
+            is_ok, code, target_url, realm, nonce = await rtsp_resolver.probe_rtsp_path(feed.ip, feed.port, parsed_p, timeout=0.8)
+            if is_ok:
+                current_works = True
+            elif code == 401:
+                # Camera requires authentication: retry with default password list based on vendor
+                retry_ok, auth_url, used_cred = await rtsp_resolver.retry_rtsp_with_default_creds(
+                    ip=feed.ip,
+                    port=feed.port,
+                    path=parsed_p,
+                    product=feed.product or "",
+                    realm=realm,
+                    nonce=nonce,
+                    timeout=1.0
+                )
+                if retry_ok and used_cred:
+                    rtsp_url = auth_url
+                    feed.rtsp_url = auth_url
+                    feed.auth_status = "default_creds"
+                    feed.notes = f"[Auto-Auth {feed.product or 'Vendor'}] Authenticated with default credentials ({used_cred[0]}:{used_cred[1]})"
+                    await db.commit()
+                    await db.refresh(feed)
+                    current_works = True
 
         if not current_works:
             resolve_res = await rtsp_resolver.resolve_camera(feed.ip, feed.port, feed.product or "", rtsp_url, continuous=True)
@@ -746,6 +767,72 @@ async def resolve_camera_rtsp(
         tested_count=resolve_result.get("tested_count", 0),
         auth=resolve_result.get("auth"),
         message=resolve_result.get("message", "Resolution completed.")
+    )
+
+@app.post("/api/streams/retry-default-creds", response_model=RetryCredentialsResponse)
+async def retry_default_creds_route(
+    payload: RetryCredentialsRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retry connecting to RTSP stream with a default password list based on vendor table.
+    Filters by vendor if found in:
+    Hikvision: admin | (blank) or 12345
+    Dahua: admin | admin
+    Axis: root | (blank)
+    Amcrest: admin | admin
+    Lorex: admin | (blank) or 12345
+    Foscam: admin | admin
+    Reolink: admin | (blank)
+    Hanwha (Samsung): admin | 4356
+    Bosch: admin | admin
+    Vivotek: admin | (blank)
+    """
+    feed = None
+    ip = payload.ip
+    port = payload.port or 554
+    product = payload.product or ""
+    path = payload.path or ""
+
+    if payload.feed_id:
+        res = await db.execute(select(CameraFeedModel).where(CameraFeedModel.id == payload.feed_id))
+        feed = res.scalar_one_or_none()
+        if not feed:
+            raise HTTPException(status_code=404, detail="Feed ID not found")
+        ip = feed.ip
+        port = feed.port
+        product = payload.product or feed.product or ""
+        if not path and feed.rtsp_url:
+            path = urlparse(feed.rtsp_url).path
+
+    if not ip:
+        raise HTTPException(status_code=400, detail="Missing target IP address or feed_id")
+
+    vendor_key = rtsp_resolver.detect_vendor_key(product)
+    retry_ok, auth_url, used_cred = await rtsp_resolver.retry_rtsp_with_default_creds(
+        ip=ip,
+        port=port,
+        path=path,
+        product=product
+    )
+
+    if feed and retry_ok and used_cred:
+        feed.rtsp_url = auth_url
+        feed.auth_status = "default_creds"
+        feed.notes = f"[Auto-Auth {vendor_key.upper()}] Authenticated with default credentials ({used_cred[0]}:{used_cred[1]})"
+        await db.commit()
+        await db.refresh(feed)
+
+    creds_tried = rtsp_resolver.get_vendor_credentials(product)
+    return RetryCredentialsResponse(
+        feed_id=payload.feed_id,
+        resolved=retry_ok,
+        stream_url=auth_url if retry_ok else (feed.rtsp_url if feed else f"rtsp://{ip}:{port}{path}"),
+        vendor=vendor_key,
+        username=used_cred[0] if (retry_ok and used_cred) else None,
+        auth_status="default_creds" if retry_ok else "unauthenticated",
+        tested_count=len(creds_tried),
+        message=f"Authenticated with {used_cred[0]}:{used_cred[1]}" if (retry_ok and used_cred) else "No default credentials matched"
     )
 
 # ==========================================
