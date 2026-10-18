@@ -785,10 +785,8 @@ class VendorRtspResolver:
                 if p not in candidate_paths:
                     candidate_paths.append(p)
 
-        # Build credentials list: filter by vendor if found in table, otherwise fallback
         # Build credentials list directly from vendor profile (with generic fallback if undetermined)
         creds_list: List[Tuple[str, str]] = self.get_vendor_credentials(product or vendor_key)
-        if vendor_key not in VENDOR_DEFAULT_CREDS_TABLE:
         if vendor_key == "generic":
             for c in generic_profile.get("creds", []):
                 if c not in creds_list:
