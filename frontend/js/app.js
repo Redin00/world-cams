@@ -15,7 +15,6 @@ class AppController {
       org: '',
       port: '',
       product: '',
-      risk_level: '',
       search: '',
       is_favorite: null,
       limit: 25000,
@@ -35,7 +34,6 @@ class AppController {
     this.orgSelect = document.getElementById('filter-org');
     this.portSelect = document.getElementById('filter-port');
     this.productSelect = document.getElementById('filter-product');
-    this.riskSelect = document.getElementById('filter-risk');
     this.btnFilterFavorites = document.getElementById('btn-filter-favorites');
     this.favFilterCount = document.getElementById('fav-filter-count');
     this.btnReset = document.getElementById('btn-reset-filters');
@@ -120,11 +118,6 @@ class AppController {
 
     this.productSelect.addEventListener('change', (e) => {
       this.currentFilters.product = e.target.value;
-      this.loadFeeds();
-    });
-
-    this.riskSelect.addEventListener('change', (e) => {
-      this.currentFilters.risk_level = e.target.value;
       this.loadFeeds();
     });
 
@@ -381,7 +374,6 @@ class AppController {
       this.currentFilters.org ||
       this.currentFilters.port ||
       this.currentFilters.product ||
-      this.currentFilters.risk_level ||
       (this.currentFilters.is_favorite === true)
     );
     this.filterBadgeDot.style.display = hasFilter ? 'block' : 'none';
@@ -585,7 +577,6 @@ class AppController {
     if (this.currentFilters.org) params.append('org', this.currentFilters.org);
     if (this.currentFilters.port) params.append('port', this.currentFilters.port);
     if (this.currentFilters.product) params.append('product', this.currentFilters.product);
-    if (this.currentFilters.risk_level) params.append('risk_level', this.currentFilters.risk_level);
     if (this.currentFilters.search) params.append('search', this.currentFilters.search);
     if (this.currentFilters.is_favorite !== null && this.currentFilters.is_favorite !== undefined) {
       params.append('is_favorite', this.currentFilters.is_favorite);
@@ -1067,14 +1058,12 @@ class AppController {
     this.orgSelect.value = '';
     this.portSelect.value = '';
     this.productSelect.value = '';
-    this.riskSelect.value = '';
 
     this.currentFilters = {
       country: '',
       org: '',
       port: '',
       product: '',
-      risk_level: '',
       search: '',
       is_favorite: null,
       limit: 25000,
