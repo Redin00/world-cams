@@ -36,15 +36,18 @@ class AppController {
     this.productSelect = document.getElementById('filter-product');
     this.btnFilterFavorites = document.getElementById('btn-filter-favorites');
     this.favFilterCount = document.getElementById('fav-filter-count');
+    this.btnRandomCamera = document.getElementById('btn-random-camera');
     this.btnReset = document.getElementById('btn-reset-filters');
     this.feedGrid = document.getElementById('feed-grid');
     this.feedCountEl = document.getElementById('feed-list-count');
 
-    // Sidebar Category Tabs
+    // Sidebar Category Tabs & Controls
     this.tabFeedsAll = document.getElementById('tab-feeds-all');
     this.tabFeedsFav = document.getElementById('tab-feeds-fav');
     this.tabCountAll = document.getElementById('tab-count-all');
     this.tabCountFav = document.getElementById('tab-count-fav');
+    this.btnSidebarRandomCam = document.getElementById('btn-sidebar-random-cam');
+    this.btnPlayerRandomCam = document.getElementById('btn-player-random-cam');
 
     // Header stats
     this.statTotal = document.getElementById('stat-total');
@@ -143,6 +146,12 @@ class AppController {
     this.tabFeedsFav?.addEventListener('click', () => {
       this.setFavoritesFilter(true);
     });
+
+    // Random Camera Selector Buttons
+    const onRandomClick = () => this.selectRandomFeed();
+    this.btnRandomCamera?.addEventListener('click', onRandomClick);
+    this.btnSidebarRandomCam?.addEventListener('click', onRandomClick);
+    this.btnPlayerRandomCam?.addEventListener('click', onRandomClick);
 
     this.btnReset.addEventListener('click', () => {
       this.resetFilters();
@@ -808,6 +817,53 @@ class AppController {
     if (favBtn) {
       favBtn.style.color = feed.is_favorite ? 'var(--accent-amber)' : 'var(--text-muted)';
     }
+  }
+
+  async selectRandomFeed() {
+    let chosenFeed = null;
+
+    // Pick from currently loaded feeds list if there are multiple feeds
+    if (this.feeds && this.feeds.length > 1) {
+      // Pick a random feed that is different from currently selected feed if possible
+      let available = this.feeds;
+      if (this.selectedFeed) {
+        const filtered = this.feeds.filter(f => f.id !== this.selectedFeed.id);
+        if (filtered.length > 0) available = filtered;
+      }
+      const idx = Math.floor(Math.random() * available.length);
+      chosenFeed = available[idx];
+    } else {
+      // Otherwise fetch directly from backend /api/feeds/random
+      try {
+        const res = await fetch('/api/feeds/random');
+        if (res.ok) {
+          chosenFeed = await res.json();
+        }
+      } catch (err) {
+        console.warn('Failed to fetch random feed from API:', err);
+      }
+    }
+
+    if (!chosenFeed) {
+      alert('No camera feeds available to select.');
+      return;
+    }
+
+    // Select the camera feed (and switch to player on mobile)
+    this.selectFeed(chosenFeed, true);
+
+    // Pan interactive map to the camera location if coordinates are available
+    if (window.worldMap && chosenFeed.latitude && chosenFeed.longitude) {
+      window.worldMap.panTo(chosenFeed.latitude, chosenFeed.longitude, 8);
+    }
+
+    // Smooth scroll the sidebar card into view
+    setTimeout(() => {
+      const card = document.querySelector(`.feed-card[data-feed-id="${chosenFeed.id}"]`);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 120);
   }
 
   async toggleFavoriteFeed(feed) {
