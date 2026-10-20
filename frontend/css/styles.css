@@ -478,6 +478,81 @@ body.dark-theme {
   border: 1px solid rgba(6, 182, 212, 0.3);
 }
 
+/* Feed Category Tabs: All vs Favorites */
+.feed-category-tabs {
+  display: flex;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0.35rem 0.65rem;
+  gap: 0.4rem;
+}
+
+.feed-cat-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.feed-cat-tab:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.feed-cat-tab.active {
+  background: var(--bg-elevated);
+  border-color: var(--border-subtle);
+  color: #fff;
+  font-weight: 600;
+}
+
+.feed-cat-tab.active[data-fav-filter="favorites"] {
+  border-color: rgba(245, 158, 11, 0.4);
+  color: var(--accent-amber);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.feed-cat-tab svg {
+  width: 12px;
+  height: 12px;
+}
+
+.feed-cat-tab.active[data-fav-filter="favorites"] svg {
+  stroke: var(--accent-amber);
+  fill: var(--accent-amber);
+}
+
+#btn-filter-favorites.active {
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+  background: rgba(245, 158, 11, 0.12);
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.25);
+}
+
+#btn-filter-favorites svg {
+  width: 13px;
+  height: 13px;
+}
+
+#btn-filter-favorites.active svg {
+  fill: var(--accent-amber);
+}
+
+#metric-favorites:hover {
+  border-color: var(--accent-amber);
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.2);
+}
+
 /* Batch Management & Multi-Select Bar */
 .feed-batch-bar {
   padding: 0.35rem 0.85rem;
@@ -576,6 +651,41 @@ body.dark-theme {
   margin: 0;
   width: 13px;
   height: 13px;
+}
+
+.card-quick-fav {
+  position: absolute;
+  bottom: 6px;
+  right: 32px;
+  width: 22px;
+  height: 22px;
+  background: rgba(10, 13, 20, 0.75);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+  z-index: 5;
+}
+
+.card-quick-fav:hover {
+  color: var(--accent-amber);
+  border-color: var(--accent-amber);
+  background: rgba(245, 158, 11, 0.15);
+}
+
+.card-quick-fav.favorited {
+  color: var(--accent-amber);
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.2);
+}
+
+.card-quick-fav.favorited svg {
+  fill: var(--accent-amber);
+  stroke: var(--accent-amber);
 }
 
 .card-quick-del {

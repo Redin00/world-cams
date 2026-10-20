@@ -65,6 +65,7 @@ class FacetSummary(BaseModel):
     risk_levels: List[FacetItem]
     total_cameras: int
     unauthenticated_count: int
+    favorites_count: int = 0
 
 class StreamStartRequest(BaseModel):
     feed_id: Optional[str] = None

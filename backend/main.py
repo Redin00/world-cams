@@ -286,7 +286,7 @@ async def get_facets(db: AsyncSession = Depends(get_db)):
     risk_res = await db.execute(risk_query)
     risks = [FacetItem(name=r[0] or "unknown", count=r[1]) for r in risk_res.all()]
 
-    # Total and unauthenticated count
+    # Total, unauthenticated, and favorites count
     total_res = await db.execute(select(func.count(CameraFeedModel.id)))
     total = total_res.scalar() or 0
 
@@ -295,6 +295,11 @@ async def get_facets(db: AsyncSession = Depends(get_db)):
     )
     unauth_count = unauth_res.scalar() or 0
 
+    fav_res = await db.execute(
+        select(func.count(CameraFeedModel.id)).where(CameraFeedModel.is_favorite == True)
+    )
+    fav_count = fav_res.scalar() or 0
+
     return FacetSummary(
         countries=countries,
         orgs=orgs,
@@ -302,7 +307,8 @@ async def get_facets(db: AsyncSession = Depends(get_db)):
         products=products,
         risk_levels=risks,
         total_cameras=total,
-        unauthenticated_count=unauth_count
+        unauthenticated_count=unauth_count,
+        favorites_count=fav_count
     )
 
 # ==========================================

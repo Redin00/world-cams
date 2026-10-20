@@ -291,7 +291,7 @@ class StreamPlayer {
     if (streamInfo && streamInfo.rtsp_source && !streamInfo.rtsp_source.includes('unsplash')) {
       feed.rtsp_url = streamInfo.rtsp_source;
       feed.screenshot_url = streamInfo.rtsp_source;
-      if (this.auditRtsp) this.auditRtsp.textContent = streamInfo.rtsp_source;
+      this.updateRtspSourceDisplay(streamInfo.rtsp_source);
     }
 
     // Proxy stream URL: feeds live MJPEG or JPEG snapshots through backend proxy
@@ -376,6 +376,7 @@ class StreamPlayer {
         if (data.resolved && data.stream_url) {
           feed.rtsp_url = data.stream_url;
           feed.auth_status = 'default_creds';
+          this.updateRtspSourceDisplay(data.stream_url);
           if (this.techAuth) {
             this.techAuth.textContent = 'DEFAULT CREDS';
             this.techAuth.className = 'value text-warning';
@@ -387,6 +388,30 @@ class StreamPlayer {
       console.warn('Retry with default credentials error:', e);
     }
     return null;
+  }
+
+  updateRtspSourceDisplay(url) {
+    if (!this.auditRtsp) return;
+    if (!url) {
+      this.auditRtsp.textContent = '--';
+      return;
+    }
+
+    // Match rtsp://user:pass@host... or rtsp://user@host...
+    const credMatch = url.match(/^(rtsps?:\/\/)([^:@]+)(?::([^@]*))?@(.+)$/i);
+    if (credMatch) {
+      const scheme = credMatch[1];
+      const user = credMatch[2];
+      const pass = credMatch[3] !== undefined ? credMatch[3] : '';
+      const rest = credMatch[4];
+
+      this.auditRtsp.innerHTML = `
+        <span style="color: var(--text-muted);">${scheme}</span><span class="cred-highlight" style="color: var(--accent-amber); font-weight: 700; background: rgba(245, 158, 11, 0.15); padding: 1px 5px; border-radius: 3px; border: 1px solid rgba(245, 158, 11, 0.35);" title="Authenticated with Default Credentials">${user}:${pass}</span><span style="color: var(--text-muted);">@</span><span>${rest}</span>
+        <span class="badge-cred-pill" style="display: inline-block; margin-left: 6px; font-size: 0.65rem; background: rgba(245, 158, 11, 0.2); color: var(--accent-amber); padding: 1px 6px; border-radius: 3px; border: 1px solid rgba(245, 158, 11, 0.4); font-weight: 600; vertical-align: middle;">DEFAULT CREDS</span>
+      `;
+    } else {
+      this.auditRtsp.textContent = url;
+    }
   }
 
   async playFeed(feed, isRetry = false) {
@@ -413,7 +438,7 @@ class StreamPlayer {
     if (this.auditProduct) this.auditProduct.textContent = feed.product;
     if (this.auditOrg) this.auditOrg.textContent = feed.org || 'Unknown Org';
     if (this.auditAsn) this.auditAsn.textContent = feed.asn || 'N/A';
-    if (this.auditRtsp) this.auditRtsp.textContent = feed.rtsp_url;
+    this.updateRtspSourceDisplay(feed.rtsp_url);
     if (this.auditPath) this.auditPath.textContent = feed.stream_path;
     if (this.auditBanner) this.auditBanner.textContent = feed.banner || 'RTSP/1.0 200 OK\r\nServer: IP Camera Streaming Server';
     if (this.auditNotes) this.auditNotes.textContent = feed.notes || 'Exposed surveillance endpoint discovered without access control restriction.';
@@ -552,9 +577,9 @@ class StreamPlayer {
 
       console.log('Stream route response:', streamData);
 
-      if (streamData.rtsp_source && streamData.rtsp_source !== feed.rtsp_url) {
+      if (streamData.rtsp_source) {
         feed.rtsp_url = streamData.rtsp_source;
-        if (this.auditRtsp) this.auditRtsp.textContent = streamData.rtsp_source;
+        this.updateRtspSourceDisplay(streamData.rtsp_source);
         if (streamData.rtsp_source.includes('@')) {
           feed.auth_status = 'default_creds';
           if (this.techAuth) {

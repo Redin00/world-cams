@@ -17,6 +17,7 @@ class AppController {
       product: '',
       risk_level: '',
       search: '',
+      is_favorite: null,
       limit: 25000,
       offset: 0
     };
@@ -35,13 +36,23 @@ class AppController {
     this.portSelect = document.getElementById('filter-port');
     this.productSelect = document.getElementById('filter-product');
     this.riskSelect = document.getElementById('filter-risk');
+    this.btnFilterFavorites = document.getElementById('btn-filter-favorites');
+    this.favFilterCount = document.getElementById('fav-filter-count');
     this.btnReset = document.getElementById('btn-reset-filters');
     this.feedGrid = document.getElementById('feed-grid');
     this.feedCountEl = document.getElementById('feed-list-count');
 
+    // Sidebar Category Tabs
+    this.tabFeedsAll = document.getElementById('tab-feeds-all');
+    this.tabFeedsFav = document.getElementById('tab-feeds-fav');
+    this.tabCountAll = document.getElementById('tab-count-all');
+    this.tabCountFav = document.getElementById('tab-count-fav');
+
     // Header stats
     this.statTotal = document.getElementById('stat-total');
     this.statUnauth = document.getElementById('stat-unauth');
+    this.statFavorites = document.getElementById('stat-favorites');
+    this.metricFavorites = document.getElementById('metric-favorites');
     this.statMtx = document.getElementById('stat-mtx');
     this.statShodan = document.getElementById('stat-shodan');
     this.statAdmin = document.getElementById('stat-admin');
@@ -115,6 +126,29 @@ class AppController {
     this.riskSelect.addEventListener('change', (e) => {
       this.currentFilters.risk_level = e.target.value;
       this.loadFeeds();
+    });
+
+    // Favorites Filter Button in Toolbar
+    this.btnFilterFavorites?.addEventListener('click', () => {
+      const isCurrentlyFav = this.currentFilters.is_favorite === true;
+      this.setFavoritesFilter(!isCurrentlyFav);
+    });
+
+    // Favorites Metric in Header Navbar
+    this.metricFavorites?.addEventListener('click', () => {
+      this.setFavoritesFilter(true);
+      if (window.innerWidth <= 900) {
+        this.switchMobileTab('feeds');
+      }
+    });
+
+    // Category Tabs in Sidebar
+    this.tabFeedsAll?.addEventListener('click', () => {
+      this.setFavoritesFilter(false);
+    });
+
+    this.tabFeedsFav?.addEventListener('click', () => {
+      this.setFavoritesFilter(true);
     });
 
     this.btnReset.addEventListener('click', () => {
@@ -314,6 +348,32 @@ class AppController {
     }
   }
 
+  setFavoritesFilter(enableFav) {
+    if (enableFav) {
+      this.currentFilters.is_favorite = true;
+    } else {
+      this.currentFilters.is_favorite = null;
+    }
+    this.updateFavoritesUIState();
+    this.loadFeeds();
+    if (window.worldMap) {
+      window.worldMap.recenter();
+    }
+  }
+
+  updateFavoritesUIState() {
+    const isFav = this.currentFilters.is_favorite === true;
+    if (this.btnFilterFavorites) {
+      this.btnFilterFavorites.classList.toggle('active', isFav);
+    }
+    if (this.tabFeedsAll) {
+      this.tabFeedsAll.classList.toggle('active', !isFav);
+    }
+    if (this.tabFeedsFav) {
+      this.tabFeedsFav.classList.toggle('active', isFav);
+    }
+  }
+
   updateFilterBadgeDot() {
     if (!this.filterBadgeDot) return;
     const hasFilter = !!(
@@ -321,7 +381,8 @@ class AppController {
       this.currentFilters.org ||
       this.currentFilters.port ||
       this.currentFilters.product ||
-      this.currentFilters.risk_level
+      this.currentFilters.risk_level ||
+      (this.currentFilters.is_favorite === true)
     );
     this.filterBadgeDot.style.display = hasFilter ? 'block' : 'none';
   }
@@ -499,6 +560,18 @@ class AppController {
         // Update stats
         this.statTotal.textContent = facets.total_cameras;
         this.statUnauth.textContent = facets.unauthenticated_count;
+        if (this.statFavorites) {
+          this.statFavorites.textContent = facets.favorites_count || 0;
+        }
+        if (this.tabCountFav) {
+          this.tabCountFav.textContent = (facets.favorites_count || 0).toLocaleString();
+        }
+        if (this.favFilterCount) {
+          this.favFilterCount.textContent = (facets.favorites_count || 0).toLocaleString();
+        }
+        if (this.tabCountAll) {
+          this.tabCountAll.textContent = (facets.total_cameras || 0).toLocaleString();
+        }
       }
     } catch (err) {
       console.error('Failed to load facets:', err);
@@ -506,6 +579,7 @@ class AppController {
   }
 
   async loadFeeds() {
+    this.updateFavoritesUIState();
     const params = new URLSearchParams();
     if (this.currentFilters.country) params.append('country', this.currentFilters.country);
     if (this.currentFilters.org) params.append('org', this.currentFilters.org);
@@ -513,6 +587,9 @@ class AppController {
     if (this.currentFilters.product) params.append('product', this.currentFilters.product);
     if (this.currentFilters.risk_level) params.append('risk_level', this.currentFilters.risk_level);
     if (this.currentFilters.search) params.append('search', this.currentFilters.search);
+    if (this.currentFilters.is_favorite !== null && this.currentFilters.is_favorite !== undefined) {
+      params.append('is_favorite', this.currentFilters.is_favorite);
+    }
     params.append('limit', '25000');
 
     try {
@@ -623,6 +700,11 @@ class AppController {
           <input type="checkbox" class="card-checkbox" data-id="${feed.id}" ${isBatchSelected ? 'checked' : ''}>
         </div>
 
+        <!-- Quick Favorite Button -->
+        <button class="card-quick-fav ${feed.is_favorite ? 'favorited' : ''}" data-id="${feed.id}" title="${feed.is_favorite ? 'Remove from favorites' : 'Add to favorites'}">
+          <i data-lucide="bookmark" style="width:11px;height:11px;"></i>
+        </button>
+
         <!-- Quick Delete Button (Admin) -->
         <button class="card-quick-del" data-id="${feed.id}" title="Permanently delete camera (Admin)">
           <i data-lucide="trash-2" style="width:11px;height:11px;"></i>
@@ -657,6 +739,13 @@ class AppController {
           card.classList.remove('selected');
         }
         this.updateBatchSelectionUI();
+      });
+
+      // Quick Favorite click handler
+      const favCardBtn = card.querySelector('.card-quick-fav');
+      favCardBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleFavoriteFeed(feed);
       });
 
       // Quick Delete click handler
@@ -730,26 +819,43 @@ class AppController {
     }
   }
 
-  async toggleFavoriteCurrent() {
-    if (!this.selectedFeed) return;
-    const newStatus = !this.selectedFeed.is_favorite;
+  async toggleFavoriteFeed(feed) {
+    if (!feed) return;
+    const newStatus = !feed.is_favorite;
 
     try {
-      const res = await fetch(`/api/feeds/${this.selectedFeed.id}`, {
+      const res = await fetch(`/api/feeds/${feed.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_favorite: newStatus })
       });
       if (res.ok) {
-        this.selectedFeed.is_favorite = newStatus;
-        const favBtn = document.getElementById('btn-toggle-favorite');
-        if (favBtn) {
-          favBtn.style.color = newStatus ? 'var(--accent-amber)' : 'var(--text-muted)';
+        feed.is_favorite = newStatus;
+        if (this.selectedFeed && this.selectedFeed.id === feed.id) {
+          this.selectedFeed.is_favorite = newStatus;
+          const favBtn = document.getElementById('btn-toggle-favorite');
+          if (favBtn) {
+            favBtn.style.color = newStatus ? 'var(--accent-amber)' : 'var(--text-muted)';
+          }
         }
+
+        // If currently filtering by favorites and user un-favorited this cam, refresh list
+        if (this.currentFilters.is_favorite === true && !newStatus) {
+          await this.loadFeeds();
+        } else {
+          // Re-render feed grid cards to update bookmark button icon and state
+          this.renderFeedGrid(false);
+        }
+        await this.loadFacets();
       }
     } catch (e) {
       console.error('Failed to toggle favorite:', e);
     }
+  }
+
+  async toggleFavoriteCurrent() {
+    if (!this.selectedFeed) return;
+    await this.toggleFavoriteFeed(this.selectedFeed);
   }
 
   // ==========================================
@@ -970,10 +1076,12 @@ class AppController {
       product: '',
       risk_level: '',
       search: '',
+      is_favorite: null,
       limit: 25000,
       offset: 0
     };
 
+    this.updateFavoritesUIState();
     this.loadFeeds();
     this.updateFilterBadgeDot();
     if (window.worldMap) {

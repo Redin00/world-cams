@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/css/styles.css?v=8300">
+  <link rel="stylesheet" href="/css/styles.css?v=8320">
 
   <!-- Scripts -->
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -47,6 +47,10 @@
       <div class="metric-card critical" id="metric-unauth">
         <span class="metric-label">UNAUTHENTICATED</span>
         <span class="metric-val" id="stat-unauth">--</span>
+      </div>
+      <div class="metric-card" id="metric-favorites" style="cursor: pointer;" title="Filter Bookmarked / Favorite Cameras">
+        <span class="metric-label">FAVORITES</span>
+        <span class="metric-val" id="stat-favorites" style="color: var(--accent-amber);">0</span>
       </div>
       <div class="metric-card" id="metric-mtx">
         <span class="metric-label">MEDIAMTX GATEWAY</span>
@@ -140,6 +144,11 @@
         </select>
       </div>
 
+      <!-- Quick Favorites Filter Toggle -->
+      <button type="button" class="btn btn-outline" id="btn-filter-favorites" title="Show only bookmarked / favorite cameras">
+        <i data-lucide="bookmark"></i> Favorites (<span id="fav-filter-count">0</span>)
+      </button>
+
       <button class="btn btn-outline" id="btn-reset-filters" title="Reset all filters">
         <i data-lucide="rotate-ccw"></i> Reset
       </button>
@@ -174,6 +183,16 @@
           <h4>DISCOVERED CAMERAS</h4>
         </div>
         <span class="badge-count" id="feed-list-count">0</span>
+      </div>
+
+      <!-- Feed Category Switcher: All Feeds vs Favorites -->
+      <div class="feed-category-tabs" id="feed-category-tabs">
+        <button type="button" class="feed-cat-tab active" id="tab-feeds-all" data-fav-filter="all">
+          <i data-lucide="video"></i> All Cams (<span id="tab-count-all">0</span>)
+        </button>
+        <button type="button" class="feed-cat-tab" id="tab-feeds-fav" data-fav-filter="favorites">
+          <i data-lucide="bookmark"></i> Favorites (<span id="tab-count-fav">0</span>)
+        </button>
       </div>
 
       <!-- Batch Management & Multi-Select Toolbar -->
@@ -565,9 +584,9 @@
   </nav>
 
   <!-- Application Logic Modules (Cache-busting version) -->
-  <script src="/js/player.js?v=8300"></script>
-  <script src="/js/map.js?v=8300"></script>
-  <script src="/js/education.js?v=8300"></script>
-  <script src="/js/app.js?v=8300"></script>
+  <script src="/js/player.js?v=8320"></script>
+  <script src="/js/map.js?v=8320"></script>
+  <script src="/js/education.js?v=8320"></script>
+  <script src="/js/app.js?v=8320"></script>
 </body>
 </html>

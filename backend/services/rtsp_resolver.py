@@ -617,7 +617,8 @@ class VendorRtspResolver:
                     await writer.wait_closed()
                 except Exception:
                     pass
-                return True, 200, uri, None, None
+                resolved_url = f"rtsp://{creds[0]}:{creds[1]}@{host}:{port}{clean_path}" if creds else uri
+                return True, 200, resolved_url, None, None
 
             # If rejected with 401 Unauthorized, extract Digest realm and nonce (or Basic realm)
             realm, nonce = None, None

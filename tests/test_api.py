@@ -47,8 +47,34 @@ async def test_full_pipeline():
         res = await client.get("/api/facets")
         assert res.status_code == 200
         facets = res.json()
-        print(f"    -> Countries in facets: {len(facets['countries'])}, Products: {len(facets['products'])}")
+        print(f"    -> Countries in facets: {len(facets['countries'])}, Products: {len(facets['products'])}, Favorites: {facets.get('favorites_count', 0)}")
         assert len(facets["countries"]) > 0
+        assert "favorites_count" in facets
+
+        # 3b. Favorites filter & toggle test
+        print("[*] Testing Favorites toggle & filtering...")
+        sample_feed = all_feeds["items"][0]
+        feed_id = sample_feed["id"]
+        # Mark as favorite
+        fav_patch = await client.patch(f"/api/feeds/{feed_id}", json={"is_favorite": True})
+        assert fav_patch.status_code == 200
+        assert fav_patch.json()["is_favorite"] is True
+
+        # Query favorites
+        fav_res = await client.get("/api/feeds?is_favorite=true")
+        assert fav_res.status_code == 200
+        fav_items = fav_res.json()["items"]
+        assert any(f["id"] == feed_id for f in fav_items), "Favorited feed not found in /api/feeds?is_favorite=true"
+
+        # Check facets updated
+        facets_updated = (await client.get("/api/facets")).json()
+        assert facets_updated["favorites_count"] >= 1
+
+        # Unmark favorite
+        unfav_patch = await client.patch(f"/api/feeds/{feed_id}", json={"is_favorite": False})
+        assert unfav_patch.status_code == 200
+        assert unfav_patch.json()["is_favorite"] is False
+        print(f"    -> Successfully verified favorite toggle, DB persistence, and /api/feeds?is_favorite=true filter.")
 
         # 4. Education articles
         print("[*] Testing /api/education/articles...")
