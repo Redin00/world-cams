@@ -42,6 +42,14 @@ async def test_full_pipeline():
             all_feeds = res.json()
         assert all_feeds["total"] > 0, "No feeds found in database!"
 
+        # 2b. Random feed test
+        print("[*] Testing /api/feeds/random...")
+        rand_res = await client.get("/api/feeds/random")
+        assert rand_res.status_code == 200
+        rand_feed = rand_res.json()
+        assert "id" in rand_feed and "ip" in rand_feed
+        print(f"    -> Successfully fetched random feed: {rand_feed['product']} [{rand_feed['ip']}:{rand_feed['port']}]")
+
         # 3. Facets test
         print("[*] Testing /api/facets...")
         res = await client.get("/api/facets")

@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/css/styles.css?v=8340">
+  <link rel="stylesheet" href="/css/styles.css?v=8360">
 
   <!-- Scripts -->
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -86,7 +86,7 @@
       <i data-lucide="search" class="search-icon"></i>
       <input type="text" id="filter-search" placeholder="Search IP, organization, product, city, or banner text...">
       <button id="btn-clear-search" class="btn-clear" title="Clear search">&times;</button>
-      <button type="button" id="btn-toggle-filters-mobile" class="btn-mobile-filter" title="Filtri">
+      <button type="button" id="btn-toggle-filters-mobile" class="btn-mobile-filter" title="Filters">
         <i data-lucide="sliders-horizontal"></i>
         <span class="filter-badge-dot" id="filter-badge-dot"></span>
       </button>
@@ -137,6 +137,11 @@
         <i data-lucide="bookmark"></i> Favorites (<span id="fav-filter-count">0</span>)
       </button>
 
+      <!-- Random Camera Selector -->
+      <button type="button" class="btn btn-outline" id="btn-random-camera" title="Jump to a random camera">
+        <i data-lucide="shuffle"></i> Random
+      </button>
+
       <button class="btn btn-outline" id="btn-reset-filters" title="Reset all filters">
         <i data-lucide="rotate-ccw"></i> Reset
       </button>
@@ -170,7 +175,12 @@
           <i data-lucide="list" class="inline-icon"></i>
           <h4>DISCOVERED CAMERAS</h4>
         </div>
-        <span class="badge-count" id="feed-list-count">0</span>
+        <div style="display: flex; align-items: center; gap: 0.35rem;">
+          <button type="button" class="btn btn-outline btn-sm" id="btn-sidebar-random-cam" title="Jump to a random camera" style="padding: 2px 7px; height: 23px; font-size: 0.68rem; display: flex; align-items: center; gap: 4px;">
+            <i data-lucide="shuffle" style="width: 11px; height: 11px;"></i> Random
+          </button>
+          <span class="badge-count" id="feed-list-count">0</span>
+        </div>
       </div>
 
       <!-- Feed Category Switcher: All Feeds vs Favorites -->
@@ -218,7 +228,7 @@
       <!-- Mobile Quick Return Bar -->
       <div class="mobile-player-topbar" id="mobile-player-topbar">
         <button type="button" class="btn btn-sm btn-outline" id="btn-mobile-back-to-feeds">
-          <i data-lucide="arrow-left"></i> Elenco Cam
+          <i data-lucide="arrow-left"></i> Camera List
         </button>
         <span class="mobile-quick-cam-name" id="mobile-quick-cam-name">Live Stream</span>
       </div>
@@ -232,6 +242,9 @@
               <h3 id="player-feed-title">Select a camera to view</h3>
             </div>
             <div class="player-controls-right">
+              <button class="btn-icon text-accent" id="btn-player-random-cam" title="Jump to next random camera">
+                <i data-lucide="shuffle"></i>
+              </button>
               <a class="btn-icon text-accent" id="btn-open-web-cam" target="_blank" rel="noopener noreferrer" title="Open Camera Web GUI in New Tab" style="display: none;">
                 <i data-lucide="external-link"></i>
               </a>
@@ -552,7 +565,7 @@
   <nav class="mobile-nav-bar" id="mobile-nav-bar">
     <button type="button" class="mobile-nav-btn active" data-tab="feeds">
       <i data-lucide="layout-list"></i>
-      <span>Telecamere</span>
+      <span>Cameras</span>
     </button>
     <button type="button" class="mobile-nav-btn" data-tab="player">
       <div class="mobile-nav-icon-wrap">
@@ -563,7 +576,7 @@
     </button>
     <button type="button" class="mobile-nav-btn" data-tab="map">
       <i data-lucide="map-pin"></i>
-      <span>Mappa</span>
+      <span>Map</span>
     </button>
     <button type="button" class="mobile-nav-btn" data-tab="recon">
       <i data-lucide="radar"></i>
@@ -572,9 +585,9 @@
   </nav>
 
   <!-- Application Logic Modules (Cache-busting version) -->
-  <script src="/js/player.js?v=8330"></script>
-  <script src="/js/map.js?v=8330"></script>
-  <script src="/js/education.js?v=8330"></script>
-  <script src="/js/app.js?v=8330"></script>
+  <script src="/js/player.js?v=8350"></script>
+  <script src="/js/map.js?v=8350"></script>
+  <script src="/js/education.js?v=8350"></script>
+  <script src="/js/app.js?v=8350"></script>
 </body>
 </html>

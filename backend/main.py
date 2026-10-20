@@ -150,6 +150,16 @@ async def list_feeds(
         "items": items
     }
 
+@app.get("/api/feeds/random")
+async def get_random_feed(db: AsyncSession = Depends(get_db)):
+    """Return a single random camera feed from the entire database."""
+    query = select(CameraFeedModel).order_by(func.random()).limit(1)
+    res = await db.execute(query)
+    record = res.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="No camera feeds available in database")
+    return record.to_dict()
+
 @app.get("/api/feeds/{feed_id}")
 async def get_feed(feed_id: str, db: AsyncSession = Depends(get_db)):
     res = await db.execute(select(CameraFeedModel).where(CameraFeedModel.id == feed_id))

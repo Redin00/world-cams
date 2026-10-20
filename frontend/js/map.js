@@ -148,6 +148,12 @@ class WorldMap {
     }
   }
 
+  panTo(lat, lng, zoom = 8) {
+    if (this.map && lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng)) {
+      this.map.setView([lat, lng], zoom, { animate: true });
+    }
+  }
+
   invalidateSize() {
     setTimeout(() => {
       this.map?.invalidateSize();
