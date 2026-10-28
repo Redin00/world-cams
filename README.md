@@ -8,7 +8,9 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg?style=flat&logo=python)](https://python.org)
 
 **WorldCams** is a cybersecurity intelligence dashboard that discovers, maps, and audits internet-exposed IP surveillance cameras (RTSP, HTTP/MJPEG, and Web Management Consoles). It bridges RTSP streams to browser-native WebRTC via **MediaMTX**, handles SSL/TLS legacy camera quirks (TLS 1.0/1.1 and unencrypted port 443), and visualizes global exposures on an interactive map. 
-(A 10,000 cams database scraped from shodan API is already installed, feel free to delete and make one yourself if you want).
+
+
+_(A 10,000 cams database scraped from shodan API is already installed, feel free to delete and make one yourself if you want)._
 
 ---
 
