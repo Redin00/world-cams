@@ -53,7 +53,8 @@ class WorldMap {
   }
 
   createMarkerIcon(riskLevel) {
-    const riskClass = `pin-${riskLevel || 'high'}`;
+    const esc = window.escapeHtml || (s => String(s ?? ''));
+    const riskClass = `pin-${esc(riskLevel || 'high')}`;
     const svgIcon = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>`;
     return L.divIcon({
       className: 'custom-map-icon',
@@ -65,19 +66,20 @@ class WorldMap {
   }
 
   createPopupContent(feed) {
+    const esc = window.escapeHtml || (s => String(s ?? ''));
     return `
       <div class="map-popup-card">
         <div class="map-popup-header">
-          <span class="map-popup-title">${feed.product || 'IP Camera'}</span>
-          <span class="badge-risk ${feed.risk_level || 'high'}">${feed.risk_level || 'high'}</span>
+          <span class="map-popup-title">${esc(feed.product || 'IP Camera')}</span>
+          <span class="badge-risk ${esc(feed.risk_level || 'high')}">${esc(feed.risk_level || 'high')}</span>
         </div>
-        <div class="map-popup-ip">${feed.ip}:${feed.port}</div>
+        <div class="map-popup-ip">${esc(feed.ip)}:${esc(feed.port)}</div>
         <div class="map-popup-details">
-          <div>📍 ${feed.city || 'Unknown'}, ${feed.country_name || 'Unknown'} (${feed.country_code || 'XX'})</div>
-          <div>🏢 ${feed.org || 'Unknown Org'}</div>
-          <div>🛡️ Auth: <strong>${feed.auth_status || 'unauthenticated'}</strong></div>
+          <div>📍 ${esc(feed.city || 'Unknown')}, ${esc(feed.country_name || 'Unknown')} (${esc(feed.country_code || 'XX')})</div>
+          <div>🏢 ${esc(feed.org || 'Unknown Org')}</div>
+          <div>🛡️ Auth: <strong>${esc(feed.auth_status || 'unauthenticated')}</strong></div>
         </div>
-        <button class="btn btn-sm btn-primary w-full" id="popup-play-${feed.id}" style="width:100%;margin-top:6px;">
+        <button class="btn btn-sm btn-primary w-full" id="popup-play-${esc(feed.id)}" style="width:100%;margin-top:6px;">
           ▶ Stream Live
         </button>
       </div>

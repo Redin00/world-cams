@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy.orm import declarative_base
 
 from backend.config import settings
+from backend.security import sanitize_text_field
 
 logger = logging.getLogger("worldcams.database")
 
@@ -55,15 +56,15 @@ class CameraFeedModel(Base):
             "id": self.id,
             "ip": self.ip,
             "port": self.port,
-            "country_code": self.country_code,
-            "country_name": self.country_name,
-            "city": self.city,
+            "country_code": sanitize_text_field(self.country_code, 8) or "XX",
+            "country_name": sanitize_text_field(self.country_name, 128) or "Unknown",
+            "city": sanitize_text_field(self.city, 128) if self.city else None,
             "latitude": self.latitude,
             "longitude": self.longitude,
-            "org": self.org,
-            "isp": self.isp,
-            "asn": self.asn,
-            "product": self.product,
+            "org": sanitize_text_field(self.org, 255) or "Unknown",
+            "isp": sanitize_text_field(self.isp, 255) if self.isp else None,
+            "asn": sanitize_text_field(self.asn, 64) if self.asn else None,
+            "product": sanitize_text_field(self.product, 255) or "Generic RTSP IP Camera",
             "rtsp_url": self.rtsp_url,
             "stream_path": self.stream_path,
             "auth_status": self.auth_status,
@@ -72,7 +73,7 @@ class CameraFeedModel(Base):
             "last_seen": self.last_seen,
             "tags": tags,
             "screenshot_url": self.screenshot_url,
-            "notes": self.notes,
+            "notes": sanitize_text_field(self.notes, 2000) if self.notes else None,
             "is_favorite": self.is_favorite,
             "hls_url": f"{settings.effective_hls_url}/{self.stream_path}",
             "webrtc_url": f"{settings.effective_whep_url}/{self.stream_path}"

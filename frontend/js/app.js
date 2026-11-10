@@ -315,6 +315,7 @@ class AppController {
   async init() {
     this.switchMobileTab('feeds');
     this.setViewMode('triage');
+    await fetch('/api/security/csrf').catch(() => {});
     await this.checkAdminStatus();
     await this.checkHealth();
     await this.loadFacets();
@@ -517,22 +518,24 @@ class AppController {
       if (res.ok) {
         const facets = await res.json();
         
+        const esc = window.escapeHtml || (s => String(s ?? ''));
+
         // Populate Countries
         this.countrySelect.innerHTML = '<option value="">All Countries</option>';
         facets.countries.forEach(c => {
-          this.countrySelect.innerHTML += `<option value="${c.code}">${c.name} (${c.count})</option>`;
+          this.countrySelect.innerHTML += `<option value="${esc(c.code)}">${esc(c.name)} (${Number(c.count) || 0})</option>`;
         });
 
         // Populate Orgs
         this.orgSelect.innerHTML = '<option value="">All Organizations</option>';
         facets.orgs.forEach(o => {
-          this.orgSelect.innerHTML += `<option value="${o.name}">${o.name} (${o.count})</option>`;
+          this.orgSelect.innerHTML += `<option value="${esc(o.name)}">${esc(o.name)} (${Number(o.count) || 0})</option>`;
         });
 
         // Populate Products
         this.productSelect.innerHTML = '<option value="">All Products</option>';
         facets.products.forEach(p => {
-          this.productSelect.innerHTML += `<option value="${p.name}">${p.name} (${p.count})</option>`;
+          this.productSelect.innerHTML += `<option value="${esc(p.name)}">${esc(p.name)} (${Number(p.count) || 0})</option>`;
         });
 
         // Populate Ports
@@ -550,8 +553,8 @@ class AppController {
           };
           this.portSelect.innerHTML = '<option value="">All Ports</option>';
           facets.ports.forEach(p => {
-            const label = portLabels[p.name] || `Port ${p.name}`;
-            this.portSelect.innerHTML += `<option value="${p.name}">${label} (${p.count.toLocaleString()})</option>`;
+            const label = portLabels[p.name] || `Port ${esc(p.name)}`;
+            this.portSelect.innerHTML += `<option value="${esc(p.name)}">${label} (${(Number(p.count) || 0).toLocaleString()})</option>`;
           });
           if (currentPort) {
             this.portSelect.value = currentPort;
@@ -685,6 +688,8 @@ class AppController {
 
     const fragment = document.createDocumentFragment();
 
+    const esc = window.escapeHtml || (s => String(s ?? ''));
+
     slice.forEach(feed => {
       const card = document.createElement('div');
       const isSelected = this.selectedFeed && this.selectedFeed.id === feed.id;
@@ -692,38 +697,52 @@ class AppController {
       card.className = `feed-card ${isSelected ? 'active' : ''} ${isBatchSelected ? 'selected' : ''}`;
       card.dataset.feedId = feed.id;
       
-      const thumb = feed.screenshot_url || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=400&auto=format&fit=crop&q=80';
+      // Only allow trusted static placeholders in grid thumbnails so the browser never makes direct connections to untrusted Shodan camera IPs
+      const defaultThumb = 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=400&auto=format&fit=crop&q=80';
+      const thumb = (feed.screenshot_url && String(feed.screenshot_url).startsWith('https://images.unsplash.com/'))
+        ? esc(feed.screenshot_url)
+        : defaultThumb;
+
+      const safeId = esc(feed.id);
+      const safeProduct = esc(feed.product || 'IP Camera');
+      const safeRisk = esc(feed.risk_level || 'high');
+      const safeIp = esc(feed.ip || '');
+      const safePort = esc(feed.port || '');
+      const safeCity = esc(feed.city || 'Unknown');
+      const safeCountry = esc(feed.country_name || 'Unknown');
+      const safeCountryCode = esc(feed.country_code || 'XX');
+      const safeOrg = esc(feed.org || 'Unknown');
 
       card.innerHTML = `
         <!-- Multi-select checkbox -->
         <div class="feed-card-check-box" title="Select for batch action">
-          <input type="checkbox" class="card-checkbox" data-id="${feed.id}" ${isBatchSelected ? 'checked' : ''}>
+          <input type="checkbox" class="card-checkbox" data-id="${safeId}" ${isBatchSelected ? 'checked' : ''}>
         </div>
 
         <!-- Quick Favorite Button -->
-        <button class="card-quick-fav ${feed.is_favorite ? 'favorited' : ''}" data-id="${feed.id}" title="${feed.is_favorite ? 'Remove from favorites' : 'Add to favorites'}">
+        <button class="card-quick-fav ${feed.is_favorite ? 'favorited' : ''}" data-id="${safeId}" title="${feed.is_favorite ? 'Remove from favorites' : 'Add to favorites'}">
           <i data-lucide="bookmark" style="width:11px;height:11px;"></i>
         </button>
 
         <!-- Quick Delete Button (Admin) -->
-        <button class="card-quick-del" data-id="${feed.id}" title="Permanently delete camera (Admin)">
+        <button class="card-quick-del" data-id="${safeId}" title="Permanently delete camera (Admin)">
           <i data-lucide="trash-2" style="width:11px;height:11px;"></i>
         </button>
 
         <div class="feed-card-thumb">
-          <img src="${thumb}" alt="${feed.product}" loading="lazy">
+          <img src="${thumb}" alt="${safeProduct}" loading="lazy">
         </div>
         <div class="feed-card-info">
           <div class="feed-card-header">
-            <span class="feed-card-product" title="${feed.product}">${feed.product}</span>
-            <span class="badge-risk ${feed.risk_level}">${feed.risk_level}</span>
+            <span class="feed-card-product" title="${safeProduct}">${safeProduct}</span>
+            <span class="badge-risk ${safeRisk}">${safeRisk}</span>
           </div>
           <div class="feed-card-ip">
-            <span>${feed.ip}</span>
-            <span class="port-tag">:${feed.port}</span>
+            <span>${safeIp}</span>
+            <span class="port-tag">:${safePort}</span>
           </div>
-          <div class="feed-card-location">📍 ${feed.city || 'Unknown'}, ${feed.country_name} (${feed.country_code})</div>
-          <div class="feed-card-org">🏢 ${feed.org}</div>
+          <div class="feed-card-location">📍 ${safeCity}, ${safeCountry} (${safeCountryCode})</div>
+          <div class="feed-card-org">🏢 ${safeOrg}</div>
         </div>
       `;
 
@@ -1187,16 +1206,17 @@ class AppController {
         }
 
         const data = await res.json();
+        const esc = window.escapeHtml || (s => String(s ?? ''));
         if (res.ok && data.source !== 'error') {
           statusMsg.className = 'alert-box success';
           const totalFound = (data.total !== undefined ? data.total : data.results?.length || 0).toLocaleString();
           const importedCount = (data.imported_to_db || 0).toLocaleString();
-          let msg = `Discovered <strong>${totalFound}</strong> cameras (Source: ${data.source}). Ingested <strong>${importedCount}</strong> new feeds into database.`;
+          let msg = `Discovered <strong>${esc(totalFound)}</strong> cameras (Source: ${esc(data.source)}). Ingested <strong>${esc(importedCount)}</strong> new feeds into database.`;
           if (data.message) {
-            msg += `<br><small style="color:var(--text-muted);">${data.message}</small>`;
+            msg += `<br><small style="color:var(--text-muted);">${esc(data.message)}</small>`;
           }
           if (data.notice) {
-            msg += `<br><small style="color:var(--accent-amber);">${data.notice}</small>`;
+            msg += `<br><small style="color:var(--accent-amber);">${esc(data.notice)}</small>`;
           }
           statusMsg.innerHTML = msg;
 
@@ -1210,7 +1230,7 @@ class AppController {
           }, 3500);
         } else {
           statusMsg.className = 'alert-box danger';
-          statusMsg.innerHTML = data.error || data.detail || 'Search request failed.';
+          statusMsg.textContent = data.error || data.detail || 'Search request failed.';
         }
       } catch (e) {
         statusMsg.className = 'alert-box danger';

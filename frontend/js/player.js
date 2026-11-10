@@ -1,9 +1,45 @@
 /**
  * WorldCams Video Player & MediaMTX Bridge Controller
- * Handles WebRTC (WHEP) via MediaMTX, Direct & Proxied HTTP MJPEG video streams,
+ * Handles WebRTC (WHEP) via MediaMTX, Isolated Proxied HTTP MJPEG/JPEG streams,
+ * Server-Side Web Portal Stream Extraction (Zero Code Execution / Anti-Honeypot),
  * and automated vendor profile resolution with smart fallback.
- * Guarantees instantaneous stream teardown on camera switch (no lingering previous streams).
  */
+
+// Global HTML Escaping Utility to prevent Stored/Reflected XSS from untrusted camera banners
+window.escapeHtml = function (value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
+// Global CSRF Token Reader & Fetch Interceptor for Double-Submit Cookie Protection
+window.getCsrfToken = function () {
+  const match = document.cookie.match(/(?:^|;\s*)worldcams_csrf=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : '';
+};
+
+(function installCsrfFetchInterceptor() {
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = function (input, init = {}) {
+    const method = (init.method || (input && input.method) || 'GET').toUpperCase();
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+      const headers = new Headers(init.headers || {});
+      const csrfToken = window.getCsrfToken();
+      if (csrfToken && !headers.has('X-CSRF-Token')) {
+        headers.set('X-CSRF-Token', csrfToken);
+      }
+      if (!headers.has('X-Requested-With')) {
+        headers.set('X-Requested-With', 'XMLHttpRequest');
+      }
+      init = Object.assign({}, init, { headers });
+    }
+    return originalFetch(input, init);
+  };
+})();
 
 class StreamPlayer {
   constructor() {
@@ -32,13 +68,15 @@ class StreamPlayer {
     this.auditBanner = document.getElementById('audit-banner');
     this.auditNotes = document.getElementById('audit-notes-text');
 
-    // Web Console elements (for Port 443 / Web UI portals)
+    // Isolated Web Portal Inspector elements (Zero Code Execution)
     this.webConsoleDisplay = document.getElementById('web-console-display');
     this.webConsoleBadgeText = document.getElementById('web-console-badge-text');
     this.webConsoleTitle = document.getElementById('web-console-title');
     this.webConsoleDesc = document.getElementById('web-console-desc');
     this.btnLaunchConsole = document.getElementById('btn-launch-console');
     this.webConsoleFrame = document.getElementById('web-console-frame');
+    this.webConsoleIsolationMeta = document.getElementById('web-console-isolation-meta');
+    this.webConsoleSourceCode = document.getElementById('web-console-source-code');
     this.btnToggleEmbed = document.getElementById('btn-toggle-embed');
 
     this.currentFeed = null;
@@ -72,8 +110,8 @@ class StreamPlayer {
         const isHidden = this.webConsoleFrame.style.display === 'none';
         this.webConsoleFrame.style.display = isHidden ? 'block' : 'none';
         this.btnToggleEmbed.innerHTML = isHidden
-          ? '<i data-lucide="eye-off"></i> Hide Embedded View'
-          : '<i data-lucide="eye"></i> Toggle Embedded View';
+          ? '<i data-lucide="eye-off"></i> Hide Sanitized Source'
+          : '<i data-lucide="code"></i> View Sanitized Source';
         lucide.createIcons();
       });
     }
@@ -84,9 +122,9 @@ class StreamPlayer {
     
     const stateClass = state.toLowerCase().replace(/[^a-z0-9]/g, '-');
     this.badgeEl.className = 'live-pill ' + stateClass;
-    this.badgeEl.innerHTML = `<span class="dot"></span> ${state}`;
+    this.badgeEl.innerHTML = `<span class="dot"></span> ${window.escapeHtml(state)}`;
     
-    if (state.startsWith('ACTIVE WEB CONSOLE')) {
+    if (state.startsWith('ISOLATED WEB PORTAL') || state.startsWith('ACTIVE WEB CONSOLE')) {
       if (this.overlayEl) this.overlayEl.style.display = 'none';
       if (this.snapshotEl) this.snapshotEl.style.display = 'none';
       if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
@@ -115,7 +153,7 @@ class StreamPlayer {
 
     const liveDot = document.getElementById('mobile-live-indicator');
     if (liveDot) {
-      if (state.startsWith('LIVE') || state.startsWith('ACTIVE WEB') || state.startsWith('SNAPSHOT')) {
+      if (state.startsWith('LIVE') || state.startsWith('ISOLATED WEB') || state.startsWith('SNAPSHOT')) {
         liveDot.classList.add('live');
       } else if (state.includes('OFFLINE') || state.includes('BLOCKED')) {
         liveDot.classList.remove('live');
@@ -123,41 +161,96 @@ class StreamPlayer {
     }
   }
 
-  showWebConsole(feed, message, effectiveUrl = null) {
+  async showWebConsole(feed, message, effectiveUrl = null) {
     if (this.activeFeedId !== feed.id) return;
+    const targetId = feed.id;
     const portNum = Number(feed.port) || 80;
     const isHttps = portNum === 443 || (feed.rtsp_url && feed.rtsp_url.startsWith('https://'));
     const isPlainFallback = message && message.includes('Plaintext HTTP');
     const protoLabel = isPlainFallback ? 'HTTP (SSL Fallback)' : (isHttps ? 'HTTPS' : 'HTTP');
-    const scheme = (isHttps && !isPlainFallback) ? 'https' : 'http';
-    const targetUrl = effectiveUrl || `${scheme}://${feed.ip}:${portNum}/`;
 
     if (this.overlayEl) this.overlayEl.style.display = 'none';
     if (this.snapshotEl) this.snapshotEl.style.display = 'none';
     if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
     if (this.videoEl) this.videoEl.style.display = 'none';
 
+    const encodedId = encodeURIComponent(feed.id);
     if (this.webConsoleDisplay) {
       this.webConsoleDisplay.style.display = 'flex';
-      if (this.webConsoleBadgeText) this.webConsoleBadgeText.textContent = `ACTIVE WEB CONSOLE (${protoLabel})`;
-      if (this.webConsoleTitle) this.webConsoleTitle.textContent = `${feed.product || 'Surveillance Device'} Web Console`;
-      if (this.webConsoleDesc) this.webConsoleDesc.textContent = message || `Exposed ${protoLabel} surveillance management interface on port ${portNum}. Live feed requires session login.`;
+      if (this.webConsoleBadgeText) this.webConsoleBadgeText.textContent = `ISOLATED WEB PORTAL (${protoLabel} NO-EXEC)`;
+      if (this.webConsoleTitle) this.webConsoleTitle.textContent = `${feed.product || 'Surveillance Device'} — Isolated Portal`;
+      if (this.webConsoleDesc) {
+        this.webConsoleDesc.textContent = 'Remote portal code execution is blocked (Anti-Honeypot Protection). Extracting stream sources server-side...';
+      }
       if (this.btnLaunchConsole) {
-        this.btnLaunchConsole.href = `/api/proxy/web?feed_id=${feed.id}`;
-        this.btnLaunchConsole.title = `Open Camera Web Console in New Tab (Bypasses Browser SSL Restrictions)`;
+        this.btnLaunchConsole.href = `/api/proxy/web?feed_id=${encodedId}`;
+        this.btnLaunchConsole.title = 'Open Sanitized Read-Only Portal Source Report (Zero Script Execution)';
       }
       if (this.webConsoleFrame) {
         this.webConsoleFrame.style.display = 'block';
-        this.webConsoleFrame.src = `/api/proxy/web?feed_id=${feed.id}`;
+      }
+      if (this.webConsoleSourceCode) {
+        this.webConsoleSourceCode.textContent = 'Fetching & sanitizing portal source via isolated backend...';
       }
       if (this.btnToggleEmbed) {
-        this.btnToggleEmbed.innerHTML = '<i data-lucide="eye-off"></i> Hide Embedded View';
+        this.btnToggleEmbed.innerHTML = '<i data-lucide="eye-off"></i> Hide Sanitized Source';
       }
       lucide.createIcons();
     }
 
-    this.setStatus(`ACTIVE WEB CONSOLE (${protoLabel})`);
-    if (this.techProto) this.techProto.textContent = `Active ${protoLabel} Web Portal (Port ${portNum})`;
+    this.setStatus(`ISOLATED WEB PORTAL (${protoLabel})`);
+    if (this.techProto) this.techProto.textContent = `Isolated ${protoLabel} Portal (Zero-Exec Sandbox, Port ${portNum})`;
+
+    // Query backend isolated portal extractor (JSON mode)
+    try {
+      const res = await fetch(`/api/proxy/web?feed_id=${encodedId}&format=json`, {
+        signal: this.abortController ? this.abortController.signal : undefined
+      });
+      if (this.activeFeedId !== targetId) return;
+      if (res.ok) {
+        const data = await res.json();
+        if (this.activeFeedId !== targetId) return;
+
+        // If the backend extracted a verified video/snapshot stream from the portal HTML, stream it directly!
+        if (data.extracted_stream_url) {
+          feed.rtsp_url = data.extracted_stream_url;
+          feed.screenshot_url = data.extracted_stream_url;
+          this.updateRtspSourceDisplay(data.extracted_stream_url);
+          if (this.webConsoleDisplay) this.webConsoleDisplay.style.display = 'none';
+          if (this.snapshotEl) {
+            this.snapshotEl.style.display = 'block';
+            this.snapshotEl.src = `/api/proxy/stream?feed_id=${encodedId}&_ts=${Date.now()}`;
+          }
+          this.setStatus(`LIVE ${protoLabel} (EXTRACTED)`);
+          if (this.techProto) {
+            this.techProto.textContent = `Extracted ${protoLabel} Stream from Isolated Portal`;
+          }
+          return;
+        }
+
+        if (this.webConsoleTitle && data.portal_title) {
+          this.webConsoleTitle.textContent = data.portal_title;
+        }
+        if (this.webConsoleDesc) {
+          this.webConsoleDesc.textContent = `Portal requires authentication or exposes no unauthenticated stream. All remote scripts (${data.blocked_scripts_count || 0}) and embedded objects (${data.blocked_objects_count || 0}) were stripped.`;
+        }
+        if (this.webConsoleIsolationMeta) {
+          this.webConsoleIsolationMeta.textContent = `🛡️ Anti-Honeypot Sandbox: ${data.blocked_scripts_count || 0} scripts & ${data.blocked_objects_count || 0} iframes/objects neutralized (Server: ${data.server_header || 'Unknown'}).`;
+        }
+        if (this.webConsoleSourceCode) {
+          this.webConsoleSourceCode.textContent = data.source_preview || '<!-- Empty portal body -->';
+        }
+      } else {
+        if (this.webConsoleSourceCode) {
+          this.webConsoleSourceCode.textContent = 'Portal unreachable or connection refused by remote camera.';
+        }
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      if (this.webConsoleSourceCode) {
+        this.webConsoleSourceCode.textContent = 'Isolated portal inspection failed: ' + err.message;
+      }
+    }
   }
 
   stop() {
@@ -183,13 +276,15 @@ class StreamPlayer {
     }
     this.isSnapshotLoaded = false;
 
-    // 3. Clear Web Console card & embedded frame
+    // 3. Clear Isolated Portal card & source preview
     if (this.webConsoleDisplay) {
       this.webConsoleDisplay.style.display = 'none';
     }
     if (this.webConsoleFrame) {
-      this.webConsoleFrame.src = 'about:blank';
       this.webConsoleFrame.style.display = 'none';
+    }
+    if (this.webConsoleSourceCode) {
+      this.webConsoleSourceCode.textContent = '';
     }
 
     // 4. IMMEDIATELY terminate & clear previous HTTP stream or snapshot
@@ -244,20 +339,21 @@ class StreamPlayer {
     const isHttps = portNum === 443 || (customUrl && customUrl.startsWith('https://')) || (feed.rtsp_url && feed.rtsp_url.startsWith('https://'));
     const protoLabel = isHttps ? 'HTTPS' : 'HTTP';
     const scheme = isHttps ? 'https' : 'http';
+    const encodedId = encodeURIComponent(feed.id);
 
     if (this.techPort) this.techPort.textContent = `${portNum} (${protoLabel} Live)`;
-    if (this.techProto) this.techProto.textContent = `${protoLabel} MJPEG / Live Stream (Port ${portNum})`;
-    this.setStatus('CONNECTING', `Connecting to ${protoLabel} stream on port ${portNum}...`);
+    if (this.techProto) this.techProto.textContent = `${protoLabel} Isolated Stream Proxy (Port ${portNum})`;
+    this.setStatus('CONNECTING', `Extracting & verifying ${protoLabel} media stream on port ${portNum}...`);
 
-    // Enable / update Open Web GUI button
+    // Enable / update Open Isolated Source Report button
     if (this.btnOpenWeb) {
-      this.btnOpenWeb.href = `/api/proxy/web?feed_id=${feed.id}`;
+      this.btnOpenWeb.href = `/api/proxy/web?feed_id=${encodedId}`;
       this.btnOpenWeb.style.display = 'inline-flex';
-      this.btnOpenWeb.title = `Open Camera Web Console via Gateway [${scheme}://${feed.ip}:${portNum}/]`;
+      this.btnOpenWeb.title = `Open Isolated Portal Source Inspector [${scheme}://${feed.ip}:${portNum}/]`;
       lucide.createIcons();
     }
 
-    // Call backend to determine if device serves a video stream or an active Web Console
+    // Call backend to determine if device serves a video stream or an isolated Web Portal
     let streamInfo = null;
     try {
       const playRes = await fetch('/api/streams/play', {
@@ -294,18 +390,14 @@ class StreamPlayer {
       this.updateRtspSourceDisplay(streamInfo.rtsp_source);
     }
 
-    // Proxy stream URL: feeds live MJPEG or JPEG snapshots through backend proxy
-    const proxyStreamUrl = `/api/proxy/stream?feed_id=${feed.id}&_ts=${Date.now()}`;
-    const directFallbackUrl = (streamInfo && streamInfo.rtsp_source && !streamInfo.rtsp_source.includes('unsplash'))
-      ? streamInfo.rtsp_source
-      : (customUrl || (feed.screenshot_url && !feed.screenshot_url.includes('unsplash') ? feed.screenshot_url : `${scheme}://${feed.ip}:${portNum}/`));
-
-    const effectiveCheckUrl = (directFallbackUrl || '').toLowerCase();
+    // Proxy stream URL: ALL HTTP/HTTPS streams are routed exclusively through our isolated backend proxy
+    // (Never connect the user's browser directly to untrusted camera IPs!)
+    const proxyStreamUrl = `/api/proxy/stream?feed_id=${encodedId}&_ts=${Date.now()}`;
+    const effectiveCheckUrl = ((streamInfo && streamInfo.rtsp_source) || customUrl || feed.rtsp_url || '').toLowerCase();
     const isContinuousMjpeg = (streamInfo && streamInfo.stream_type === 'mjpeg') ||
       ['mjpg', 'mjpeg', 'nphmotionjpeg', 'video.cgi', 'faststream', 'videostream.cgi'].some(k => effectiveCheckUrl.includes(k));
 
     this.snapshotEl.onload = () => {
-      // Discard event if user has switched to another camera in the meantime
       if (this.activeFeedId !== targetId) return;
       this.isSnapshotLoaded = true;
       if (this.webConsoleDisplay) this.webConsoleDisplay.style.display = 'none';
@@ -313,30 +405,17 @@ class StreamPlayer {
       this.setStatus(`LIVE ${protoLabel}`);
       if (this.techProto) {
         this.techProto.textContent = isContinuousMjpeg
-          ? `${protoLabel}/MJPEG Live Active (Port ${portNum})`
-          : `${protoLabel}/JPEG Live Snapshot (Port ${portNum})`;
+          ? `${protoLabel}/MJPEG Isolated Stream (Port ${portNum})`
+          : `${protoLabel}/JPEG Isolated Snapshot (Port ${portNum})`;
       }
     };
 
-    let triedFallback = false;
     this.snapshotEl.onerror = () => {
-      // Discard event if user has switched to another camera in the meantime
       if (this.activeFeedId !== targetId) return;
-      if (!triedFallback && directFallbackUrl && !directFallbackUrl.includes('unsplash')) {
-        triedFallback = true;
-        // On port 443, avoid raw browser <img> request that triggers SSL_ERROR_RX_RECORD_TOO_LONG
-        if (portNum === 443) {
-          this.showWebConsole(feed, 'Camera web console on port 443. Live feed requires web session login.');
-          return;
-        }
-        console.warn('Proxy load failed, trying direct URL fallback:', directFallbackUrl);
-        this.snapshotEl.src = directFallbackUrl;
-        return;
-      }
       this.isSnapshotLoaded = false;
-      // If web port, gracefully display Web Console portal
+      // If web port, inspect in Isolated Web Portal mode (zero code execution)
       if ([443, 80, 8080, 8000, 8050].includes(portNum)) {
-        this.showWebConsole(feed, `Camera web console on port ${portNum}. Live feed requires web session login.`);
+        this.showWebConsole(feed, `Isolated camera portal on port ${portNum}. Extracting source...`);
       } else {
         this.setStatus('OFFLINE', `${protoLabel} camera port ${portNum} closed or stream unavailable.`);
         if (this.techProto) this.techProto.textContent = `Port ${portNum} Unreachable (Offline)`;
@@ -348,7 +427,6 @@ class StreamPlayer {
     // Snapshot refresh timer for static snapshots (every 2.5s)
     this.refreshInterval = setInterval(() => {
       if (this.currentFeed && this.activeFeedId === targetId && this.snapshotEl && this.isSnapshotLoaded) {
-        // Only refresh if not an infinite multipart MJPEG stream
         if (!isContinuousMjpeg) {
           const sep = proxyStreamUrl.includes('?') ? '&' : '?';
           this.snapshotEl.src = `${proxyStreamUrl}${sep}_r=${Date.now()}`;
@@ -400,10 +478,10 @@ class StreamPlayer {
     // Match rtsp://user:pass@host... or rtsp://user@host...
     const credMatch = url.match(/^(rtsps?:\/\/)([^:@]+)(?::([^@]*))?@(.+)$/i);
     if (credMatch) {
-      const scheme = credMatch[1];
-      const user = credMatch[2];
-      const pass = credMatch[3] !== undefined ? credMatch[3] : '';
-      const rest = credMatch[4];
+      const scheme = window.escapeHtml(credMatch[1]);
+      const user = window.escapeHtml(credMatch[2]);
+      const pass = window.escapeHtml(credMatch[3] !== undefined ? credMatch[3] : '');
+      const rest = window.escapeHtml(credMatch[4]);
 
       this.auditRtsp.innerHTML = `
         <span style="color: var(--text-muted);">${scheme}</span><span class="cred-highlight" style="color: var(--accent-amber); font-weight: 700; background: rgba(245, 158, 11, 0.15); padding: 1px 5px; border-radius: 3px; border: 1px solid rgba(245, 158, 11, 0.35);" title="Authenticated with Default Credentials">${user}:${pass}</span><span style="color: var(--text-muted);">@</span><span>${rest}</span>
@@ -412,6 +490,15 @@ class StreamPlayer {
     } else {
       this.auditRtsp.textContent = url;
     }
+  }
+
+  getSafeSnapshotSrc(feed) {
+    const defaultPlaceholder = 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80';
+    if (!feed || !feed.screenshot_url) return defaultPlaceholder;
+    if (feed.screenshot_url.startsWith('https://images.unsplash.com/')) {
+      return feed.screenshot_url;
+    }
+    return `/api/proxy/stream?feed_id=${encodeURIComponent(feed.id)}`;
   }
 
   async playFeed(feed, isRetry = false) {
@@ -468,8 +555,8 @@ class StreamPlayer {
     if (this.techProto) this.techProto.textContent = isAltRtsp ? 'MediaMTX (Negotiating Alt RTSP 8554...)' : 'MediaMTX (Negotiating RTSP...)';
     this.setStatus('CONNECTING', isAltRtsp ? 'Bridging Alt RTSP 8554 stream with MediaMTX...' : 'Bridging RTSP stream with MediaMTX...');
 
-    // Load preview snapshot as placeholder while connecting
-    const fallbackThumb = feed.screenshot_url || 'https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=800&auto=format&fit=crop&q=80';
+    // Load preview snapshot via isolated proxy or safe placeholder while connecting
+    const fallbackThumb = this.getSafeSnapshotSrc(feed);
     this.snapshotEl.onload = () => {
       if (this.activeFeedId === targetId) {
         this.isSnapshotLoaded = true;
@@ -735,13 +822,13 @@ class StreamPlayer {
           }
         }
 
-        // If resolution did not yield working RTSP stream, fall back to snapshot or offline
+        // If resolution did not yield working RTSP stream, fall back to isolated snapshot or offline
         if (this.activeFeedId !== targetId) return;
         const hasLiveSnapshot = feed.screenshot_url && !feed.screenshot_url.includes('unsplash');
         if (hasLiveSnapshot) {
           if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
           if (this.snapshotEl) {
-            this.snapshotEl.src = feed.screenshot_url;
+            this.snapshotEl.src = this.getSafeSnapshotSrc(feed);
             this.snapshotEl.style.display = 'block';
           }
           this.setStatus('SNAPSHOT (RTSP BLOCKED)', `Camera accessible via HTTP, but RTSP port ${feed.port} not delivering frames.`);

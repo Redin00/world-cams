@@ -4,9 +4,10 @@ import hashlib
 import logging
 import re
 from typing import Optional, List, Tuple, Dict, Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import httpx
 from backend.config import get_legacy_ssl_context
+from backend.security import inspect_stream_chunk_safety, extract_stream_sources_from_html
 
 logger = logging.getLogger("worldcams.resolver")
 
@@ -617,7 +618,7 @@ class VendorRtspResolver:
                     await writer.wait_closed()
                 except Exception:
                     pass
-                resolved_url = f"rtsp://{creds[0]}:{creds[1]}@{host}:{port}{clean_path}" if creds else uri
+                resolved_url = f"rtsp://{creds[0]}:{creds[1]}@{host}:{port}{path}" if creds else uri
                 return True, 200, resolved_url, None, None
 
             # If rejected with 401 Unauthorized, extract Digest realm and nonce (or Basic realm)
@@ -787,8 +788,8 @@ class VendorRtspResolver:
         """
         Async probe for HTTP/HTTPS web camera endpoints (ports 443, 80, 8080, 8050, 8000).
         Returns (is_success, resolved_url, stream_type).
-        Only accepts genuine images or MJPEG/video streams (rejects HTML!).
-        Uses stream reading so infinite MJPEG video streams don't hang waiting for EOF.
+        Only accepts genuine images or MJPEG/video streams (rejects HTML, SVG, scripts, and malware binaries!).
+        Uses stream reading + magic-byte inspection so honeypots disguising HTML/malware as image/jpeg are blocked.
         Includes automatic fallback from HTTPS to plaintext HTTP if SSL_ERROR_RX_RECORD_TOO_LONG occurs on port 443.
         """
         schemes = ["https", "http"] if (port == 443 or is_https) else ["http"]
@@ -796,14 +797,21 @@ class VendorRtspResolver:
             url = f"{scheme}://{host}:{port}{path}"
             verify_arg = get_legacy_ssl_context() if scheme == "https" else False
             try:
-                async with httpx.AsyncClient(timeout=timeout, verify=verify_arg, follow_redirects=True) as client:
+                async with httpx.AsyncClient(timeout=timeout, verify=verify_arg, follow_redirects=False) as client:
                     async with client.stream("GET", url) as res:
                         ctype = res.headers.get("content-type", "").lower()
                         if res.status_code == 200:
-                            if "multipart/x-mixed-replace" in ctype or "mjpg" in ctype or "video" in ctype:
-                                return True, url, "mjpeg"
-                            if "image" in ctype or "jpeg" in ctype or "png" in ctype:
-                                return True, url, "jpeg"
+                            is_mjpeg = "multipart/x-mixed-replace" in ctype or "mjpg" in ctype or "video" in ctype
+                            is_img = "image" in ctype or "jpeg" in ctype or "png" in ctype
+                            if (is_mjpeg or is_img) and "svg" not in ctype and "html" not in ctype:
+                                first_chunk = b""
+                                async for chunk in res.aiter_bytes():
+                                    if chunk:
+                                        first_chunk = chunk[:512]
+                                        break
+                                is_safe, _ = inspect_stream_chunk_safety(first_chunk, ctype)
+                                if is_safe:
+                                    return True, url, ("mjpeg" if is_mjpeg else "jpeg")
             except Exception as e:
                 err_str = str(e).lower()
                 # If HTTPS failed due to SSL mismatch (e.g. RECORD_TOO_LARGE, WRONG_VERSION_NUMBER), retry in plain HTTP
@@ -981,14 +989,63 @@ class VendorRtspResolver:
                     }
 
             # Check if camera serves an active Web UI portal (HTML interface)
+            # Statically parse the HTML source in isolated mode (zero code execution) to extract embedded video/snapshot streams!
             schemes_to_test = ["https", "http"] if is_https else ["http"]
             for s in schemes_to_test:
                 verify_arg = get_legacy_ssl_context() if s == "https" else False
                 try:
-                    async with httpx.AsyncClient(timeout=1.5, verify=verify_arg, follow_redirects=True) as client:
-                        root_res = await client.get(f"{s}://{ip}:{port}/")
+                    async with httpx.AsyncClient(timeout=1.8, verify=verify_arg, follow_redirects=False) as client:
+                        portal_url = f"{s}://{ip}:{port}/"
+                        root_res = await client.get(portal_url)
+                        # Handle same-host redirect safely
+                        if root_res.status_code in (301, 302, 303, 307, 308):
+                            loc = root_res.headers.get("location", "")
+                            if loc:
+                                next_url = urljoin(portal_url, loc)
+                                if (urlparse(next_url).hostname or "").lower() == ip.lower():
+                                    root_res = await client.get(next_url)
+
                         if root_res.status_code in (200, 301, 302, 401):
                             proto_note = "HTTPS" if s == "https" else "Plaintext HTTP (SSL Fallback)"
+                            # Attempt to extract embedded video/snapshot source URLs from portal HTML
+                            if root_res.status_code == 200 and root_res.text:
+                                extracted = extract_stream_sources_from_html(root_res.text[:262144], portal_url)
+                                for cand_http in extracted.get("http_candidates", []):
+                                    cand_parsed = urlparse(cand_http)
+                                    cand_path = (cand_parsed.path or "/") + (f"?{cand_parsed.query}" if cand_parsed.query else "")
+                                    ok_c, resolved_c, stype_c = await self.probe_http_path(
+                                        ip, port, cand_path, timeout=probe_timeout, is_https=(s == "https")
+                                    )
+                                    tested_count += 1
+                                    if ok_c:
+                                        return {
+                                            "resolved": True,
+                                            "protocol": s,
+                                            "stream_url": resolved_c,
+                                            "stream_type": stype_c,
+                                            "vendor": vendor_key,
+                                            "tested_count": tested_count,
+                                            "auth": "extracted_from_portal",
+                                            "message": f"Extracted live {stype_c.upper()} stream source from isolated web portal ({proto_note}): {resolved_c}"
+                                        }
+
+                                for cand_rtsp in extracted.get("rtsp_candidates", []):
+                                    rp = urlparse(cand_rtsp)
+                                    r_port = rp.port or 554
+                                    r_path = (rp.path or "/") + (f"?{rp.query}" if rp.query else "")
+                                    ok_r, _, resolved_r, _, _ = await self.probe_rtsp_path(ip, r_port, r_path, timeout=1.0)
+                                    tested_count += 1
+                                    if ok_r:
+                                        return {
+                                            "resolved": True,
+                                            "protocol": "rtsp",
+                                            "stream_url": resolved_r,
+                                            "vendor": vendor_key,
+                                            "tested_count": tested_count,
+                                            "auth": "extracted_from_portal",
+                                            "message": f"Extracted live RTSP stream source from isolated web portal: {resolved_r}"
+                                        }
+
                             return {
                                 "resolved": True,
                                 "protocol": f"{s}_ui",
@@ -997,7 +1054,7 @@ class VendorRtspResolver:
                                 "vendor": vendor_key,
                                 "tested_count": tested_count + 1,
                                 "auth": "web_interface",
-                                "message": f"Active Camera Web Interface on port {port} ({proto_note})"
+                                "message": f"Isolated Camera Web Portal on port {port} ({proto_note}) — Code Execution Blocked"
                             }
                 except Exception as e:
                     err_str = str(e).lower()

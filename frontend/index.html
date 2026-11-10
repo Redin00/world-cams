@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/css/styles.css?v=8370">
+  <link rel="stylesheet" href="/css/styles.css?v=8500">
 
   <!-- Scripts -->
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -270,21 +270,26 @@
             <iframe id="webrtc-frame" allow="autoplay; fullscreen" style="display: none; width: 100%; height: 100%; border: none; background: #000;"></iframe>
             <!-- HTML5 Video element fallback -->
             <video id="live-video" controls autoplay muted playsinline style="display: none;"></video>
-            <!-- Web Console Display Card & Embedded Preview -->
+            <!-- Isolated Web Portal Inspector (Anti-Honeypot: Zero Code Execution) -->
             <div id="web-console-display" class="web-console-display" style="display: none;">
-              <div class="web-console-badge" id="web-console-badge"><i data-lucide="shield-check"></i> <span id="web-console-badge-text">ACTIVE WEB CONSOLE</span></div>
-              <div class="web-console-icon"><i data-lucide="monitor" class="icon-hero"></i></div>
-              <h4 class="web-console-title" id="web-console-title">Camera Web Management Interface</h4>
-              <p class="web-console-desc" id="web-console-desc">This device exposes an active web management console. Direct video feeds require web session authentication.</p>
+              <div class="web-console-badge" id="web-console-badge"><i data-lucide="shield-check"></i> <span id="web-console-badge-text">ISOLATED WEB PORTAL (NO-EXEC)</span></div>
+              <div class="web-console-icon"><i data-lucide="shield-alert" class="icon-hero"></i></div>
+              <h4 class="web-console-title" id="web-console-title">Isolated Camera Web Portal</h4>
+              <p class="web-console-desc" id="web-console-desc">Active web portal detected. Remote HTML/JS execution is blocked to prevent cam-honeypot malware. Media stream extraction runs in isolated mode.</p>
               <div class="web-console-actions">
                 <a id="btn-launch-console" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-primary">
-                  <i data-lucide="external-link"></i> Launch Web Console
+                  <i data-lucide="file-code"></i> Open Isolated Source Report
                 </a>
                 <button type="button" id="btn-toggle-embed" class="btn btn-outline">
-                  <i data-lucide="eye"></i> Toggle Embedded View
+                  <i data-lucide="code"></i> View Sanitized Source
                 </button>
               </div>
-              <iframe id="web-console-frame" class="web-console-frame" sandbox="allow-forms allow-scripts allow-same-origin" style="display: none;"></iframe>
+              <div id="web-console-frame" class="web-console-frame" style="display: none; background: #0b0f19; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 10px; text-align: left; overflow-y: auto; max-height: 220px; width: 100%; margin-top: 10px;">
+                <div id="web-console-isolation-meta" style="font-size: 0.72rem; color: var(--accent-emerald); margin-bottom: 6px; font-weight: 600;">
+                  🛡️ Sandbox Active: 0 remote scripts executed.
+                </div>
+                <pre id="web-console-source-code" style="margin: 0; font-size: 0.68rem; color: var(--text-muted); white-space: pre-wrap; word-break: break-all; font-family: 'Fira Code', monospace;">Loading sanitized portal source...</pre>
+              </div>
             </div>
             <!-- Non-blocking connection banner -->
             <div class="video-overlay" id="video-overlay">
@@ -585,9 +590,9 @@
   </nav>
 
   <!-- Application Logic Modules (Cache-busting version) -->
-  <script src="/js/player.js?v=8350"></script>
-  <script src="/js/map.js?v=8350"></script>
-  <script src="/js/education.js?v=8350"></script>
-  <script src="/js/app.js?v=8350"></script>
+  <script src="/js/player.js?v=8500"></script>
+  <script src="/js/map.js?v=8500"></script>
+  <script src="/js/education.js?v=8500"></script>
+  <script src="/js/app.js?v=8500"></script>
 </body>
 </html>
