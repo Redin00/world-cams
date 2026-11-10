@@ -19,7 +19,22 @@ window.escapeHtml = function (value) {
 // Global CSRF Token Reader & Fetch Interceptor for Double-Submit Cookie Protection
 window.getCsrfToken = function () {
   const match = document.cookie.match(/(?:^|;\s*)worldcams_csrf=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : '';
+  return (match ? decodeURIComponent(match[1]) : '') || window._csrfToken || '';
+};
+
+// Helper functions to classify HTTP/HTTPS Web camera ports (80-99 including 81, 82, 83..., 443, 8443, 8000-8499, etc.) vs RTSP ports
+window.isHttpsCameraPort = function (port) {
+  return [443, 8443, 4443, 9443].includes(Number(port));
+};
+
+window.isWebCameraPort = function (port) {
+  const p = Number(port) || 0;
+  if ([554, 8554, 10554, 5544, 7070, 7447, 37777].includes(p)) return false;
+  if (window.isHttpsCameraPort(p)) return true;
+  if (p >= 80 && p <= 99) return true;
+  if ((p >= 8000 && p <= 8499) || (p >= 8800 && p <= 8899)) return true;
+  if ([800, 3000, 5000, 5001, 5223, 9000, 9001, 9080, 10000, 50000, 50001, 50002, 50003, 60000, 60001].includes(p)) return true;
+  return false;
 };
 
 (function installCsrfFetchInterceptor() {
@@ -414,7 +429,7 @@ class StreamPlayer {
       if (this.activeFeedId !== targetId) return;
       this.isSnapshotLoaded = false;
       // If web port, inspect in Isolated Web Portal mode (zero code execution)
-      if ([443, 80, 8080, 8000, 8050].includes(portNum)) {
+      if (window.isWebCameraPort(portNum)) {
         this.showWebConsole(feed, `Isolated camera portal on port ${portNum}. Extracting source...`);
       } else {
         this.setStatus('OFFLINE', `${protoLabel} camera port ${portNum} closed or stream unavailable.`);
@@ -531,16 +546,19 @@ class StreamPlayer {
     if (this.auditNotes) this.auditNotes.textContent = feed.notes || 'Exposed surveillance endpoint discovered without access control restriction.';
 
     const portNum = Number(feed.port) || 554;
-    const isWebPort = [443, 80, 8080, 8050, 8000].includes(portNum);
+    const isWebPort = window.isWebCameraPort(portNum);
     const isAltRtsp = portNum === 8554;
     const rtspUrl = feed.rtsp_url || '';
     const isHttpProtocol = rtspUrl.startsWith('http://') || rtspUrl.startsWith('https://');
 
     // =========================================================================
-    // CASE A: DIRECT OR PROXIED HTTP/HTTPS STREAM (Port 443/80/8080/8050/8000 or HTTP/HTTPS URL)
+    // CASE A: DIRECT OR PROXIED HTTP/HTTPS STREAM (Port 80-99, 443, 8000-8499, etc. or HTTP/HTTPS URL)
     // =========================================================================
     if (isWebPort || isHttpProtocol) {
-      this.playHttpStream(feed, rtspUrl);
+      const effectiveWebUrl = isHttpProtocol
+        ? rtspUrl
+        : `${window.isHttpsCameraPort(portNum) ? 'https' : 'http'}://${feed.ip}:${portNum}/`;
+      this.playHttpStream(feed, effectiveWebUrl);
       return;
     }
 

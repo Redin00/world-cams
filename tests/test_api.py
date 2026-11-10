@@ -669,7 +669,28 @@ async def test_full_pipeline():
             headers={"X-CSRF-Token": csrf_token}
         )
         assert valid_csrf_res.status_code == 200, f"Expected 200 with valid X-CSRF-Token, got {valid_csrf_res.status_code}"
-        print("    -> CSRF protection (Origin check, Form Content-Type block, Double-Submit HMAC token) verified")
+
+        # Stale/invalid cookie self-healing on /api/security/csrf + same-origin browser fetch verification
+        client.cookies.set("worldcams_csrf", "stale_nonce.invalid_signature")
+        healed_res = await client.get("/api/security/csrf")
+        assert healed_res.status_code == 200
+        healed_token = healed_res.json()["csrf_token"]
+        assert healed_token != "stale_nonce.invalid_signature", "Expected stale CSRF cookie to be replaced with valid token"
+
+        same_origin_browser_res = await client.post(
+            "/api/streams/stop",
+            json={"stream_name": "test"},
+            headers={"Sec-Fetch-Site": "same-origin", "Origin": "http://127.0.0.1:8000"}
+        )
+        assert same_origin_browser_res.status_code == 200, "Expected same-origin browser JSON fetch to succeed"
+
+        cross_site_fetch_res = await client.post(
+            "/api/streams/stop",
+            json={"stream_name": "test"},
+            headers={"Sec-Fetch-Site": "cross-site", "X-CSRF-Token": healed_token}
+        )
+        assert cross_site_fetch_res.status_code == 403, "Expected Sec-Fetch-Site: cross-site to be blocked with 403"
+        print("    -> CSRF protection (Origin, Form Content-Type, Double-Submit HMAC, Cookie Self-Healing, Sec-Fetch-Site) verified")
 
     print("\n[✓] ALL TESTS PASSED SUCCESSFULLY!")
 

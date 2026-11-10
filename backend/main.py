@@ -27,6 +27,7 @@ from backend.models import (
 from backend.security import (
     SecurityWAFMiddleware,
     generate_csrf_token,
+    verify_csrf_token,
     verify_admin_token_constant_time,
     rate_limiter,
     validate_safe_identifier,
@@ -34,6 +35,8 @@ from backend.security import (
     sanitize_text_field,
     validate_camera_ip,
     validate_camera_url,
+    is_https_camera_port,
+    is_web_camera_port,
     inspect_stream_chunk_safety,
     extract_stream_sources_from_html,
 )
@@ -99,7 +102,8 @@ async def add_no_cache_headers(request, call_next):
 @app.get("/api/security/csrf")
 async def get_csrf_token_endpoint(request: Request):
     """Issue a signed CSRF token and report active security isolation status."""
-    token = request.cookies.get("worldcams_csrf") or generate_csrf_token()
+    existing = request.cookies.get("worldcams_csrf")
+    token = existing if (existing and verify_csrf_token(existing)) else generate_csrf_token()
     resp = JSONResponse({
         "csrf_token": token,
         "portal_isolation": "strict_no_exec",
@@ -109,7 +113,7 @@ async def get_csrf_token_endpoint(request: Request):
         key="worldcams_csrf",
         value=token,
         httponly=False,
-        samesite="strict",
+        samesite="lax",
         path="/"
     )
     return resp
@@ -422,10 +426,15 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         stream_path = feed.stream_path
 
         # ---------------------------------------------------------------------
-        # Case A: Camera on Web Port (443, 80, 8080, 8050, 8000) or HTTP/HTTPS URL
+        # Case A: Camera on Web Port (80-99 including 81, 82, 83..., 443, 8000-8499, etc.) or HTTP/HTTPS URL
         # ---------------------------------------------------------------------
-        if feed.port in (443, 80, 8080, 8050, 8000) or (rtsp_url and rtsp_url.startswith(("http://", "https://"))):
-            scheme = "https" if feed.port == 443 or (rtsp_url and rtsp_url.startswith("https://")) else "http"
+        if is_web_camera_port(feed.port) or (rtsp_url and rtsp_url.startswith(("http://", "https://"))):
+            scheme = "https" if is_https_camera_port(feed.port) or (rtsp_url and rtsp_url.startswith("https://")) else "http"
+            # If a web-port camera was previously saved with a dummy rtsp:// URL, normalize it to http(s)://
+            if rtsp_url and rtsp_url.startswith("rtsp://"):
+                rtsp_url = f"{scheme}://{feed.ip}:{feed.port}/"
+                feed.rtsp_url = rtsp_url
+                await db.commit()
             has_valid_stream = _is_specific_http_stream_url(feed.screenshot_url, feed.port) or _is_specific_http_stream_url(rtsp_url, feed.port)
 
             if has_valid_stream:
@@ -678,7 +687,7 @@ async def proxy_camera_stream(
         feed = res.scalar_one_or_none()
         if feed:
             validate_camera_ip(feed.ip, feed.port)
-            scheme = "https" if feed.port == 443 or (feed.rtsp_url and feed.rtsp_url.startswith("https://")) else "http"
+            scheme = "https" if is_https_camera_port(feed.port) or (feed.rtsp_url and feed.rtsp_url.startswith("https://")) else "http"
             if _is_specific_http_stream_url(feed.screenshot_url, feed.port):
                 target_url = _clean_http_url(feed.screenshot_url)
             elif _is_specific_http_stream_url(feed.rtsp_url, feed.port):
@@ -953,7 +962,7 @@ async def proxy_web_console(
         feed = res.scalar_one_or_none()
         if feed:
             validate_camera_ip(feed.ip, feed.port)
-            scheme = "https" if feed.port == 443 or (feed.rtsp_url and feed.rtsp_url.startswith("https://")) else "http"
+            scheme = "https" if is_https_camera_port(feed.port) or (feed.rtsp_url and feed.rtsp_url.startswith("https://")) else "http"
             target_url = f"{scheme}://{feed.ip}:{feed.port}/"
 
     if not target_url:
@@ -1350,35 +1359,58 @@ async def search_shodan(
 
     imported_count = 0
     if payload.import_to_db and "results" in results and results["results"]:
-        # Query all existing IDs in 1 single fast query for O(1) set lookup
-        existing_res = await db.execute(select(CameraFeedModel.id))
-        existing_ids = set(existing_res.scalars().all())
+        # Query all existing IDs, stream_paths, and (ip, port) pairs in 1 single fast query for O(1) lookup
+        existing_res = await db.execute(
+            select(CameraFeedModel.id, CameraFeedModel.stream_path, CameraFeedModel.ip, CameraFeedModel.port)
+        )
+        existing_ids = set()
+        existing_paths = set()
+        existing_endpoints = set()
+        for row_id, row_path, row_ip, row_port in existing_res.all():
+            if row_id:
+                existing_ids.add(row_id)
+            if row_path:
+                existing_paths.add(row_path)
+            if row_ip and row_port is not None:
+                existing_endpoints.add((row_ip, int(row_port)))
 
         new_feeds = []
         for item in results["results"]:
             fid = sanitize_text_field(item.get("id", ""), max_len=64)
-            if fid and fid not in existing_ids:
+            fip = sanitize_text_field(item.get("ip", ""), max_len=45)
+            fport = int(item.get("port", 554))
+            fpath = sanitize_text_field(item.get("stream_path", ""), max_len=128) or f"cam_{fip.replace('.', '_')}_{fport}"
+
+            if (
+                fid
+                and fip
+                and fid not in existing_ids
+                and fpath not in existing_paths
+                and (fip, fport) not in existing_endpoints
+            ):
                 existing_ids.add(fid)
+                existing_paths.add(fpath)
+                existing_endpoints.add((fip, fport))
                 feed = CameraFeedModel(
                     id=fid,
-                    ip=sanitize_text_field(item.get("ip", ""), max_len=45),
-                    port=int(item.get("port", 554)),
-                    country_code=sanitize_text_field(item.get("country_code", "XX"), max_len=8),
-                    country_name=sanitize_text_field(item.get("country_name", "Unknown"), max_len=128),
+                    ip=fip,
+                    port=fport,
+                    country_code=sanitize_text_field(item.get("country_code", "XX"), max_len=8) or "XX",
+                    country_name=sanitize_text_field(item.get("country_name", "Unknown"), max_len=128) or "Unknown",
                     city=sanitize_text_field(item.get("city"), max_len=128) if item.get("city") else None,
                     latitude=float(item.get("latitude") or 0.0),
                     longitude=float(item.get("longitude") or 0.0),
-                    org=sanitize_text_field(item.get("org", "Unknown"), max_len=255),
+                    org=sanitize_text_field(item.get("org", "Unknown"), max_len=255) or "Unknown",
                     isp=sanitize_text_field(item.get("isp"), max_len=255) if item.get("isp") else None,
                     asn=sanitize_text_field(item.get("asn"), max_len=64) if item.get("asn") else None,
-                    product=sanitize_text_field(item.get("product", "Generic RTSP IP Camera"), max_len=255),
+                    product=sanitize_text_field(item.get("product", "Generic RTSP IP Camera"), max_len=255) or "Generic RTSP IP Camera",
                     rtsp_url=sanitize_text_field(item.get("rtsp_url", ""), max_len=500),
-                    stream_path=sanitize_text_field(item.get("stream_path", ""), max_len=128),
-                    auth_status=sanitize_text_field(item.get("auth_status", "unauthenticated"), max_len=64),
-                    risk_level=sanitize_text_field(item.get("risk_level", "high"), max_len=32),
+                    stream_path=fpath,
+                    auth_status=sanitize_text_field(item.get("auth_status", "unauthenticated"), max_len=64) or "unauthenticated",
+                    risk_level=sanitize_text_field(item.get("risk_level", "high"), max_len=32) or "high",
                     banner=item.get("banner", "")[:2000] if item.get("banner") else None,
                     last_seen=sanitize_text_field(item.get("last_seen"), max_len=64) if item.get("last_seen") else None,
-                    tags_json=json.dumps([sanitize_text_field(str(t), max_len=40) for t in item.get("tags", [])[:15]]),
+                    tags_json=json.dumps([sanitize_text_field(str(t), max_len=40) for t in (item.get("tags") or [])[:15]]),
                     screenshot_url=sanitize_text_field(item.get("screenshot_url"), max_len=500) if item.get("screenshot_url") else None,
                     notes=sanitize_text_field(item.get("notes"), max_len=500) if item.get("notes") else None,
                     is_favorite=False

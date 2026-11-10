@@ -315,7 +315,15 @@ class AppController {
   async init() {
     this.switchMobileTab('feeds');
     this.setViewMode('triage');
-    await fetch('/api/security/csrf').catch(() => {});
+    try {
+      const csrfRes = await fetch('/api/security/csrf');
+      if (csrfRes.ok) {
+        const csrfData = await csrfRes.json();
+        if (csrfData && csrfData.csrf_token) {
+          window._csrfToken = csrfData.csrf_token;
+        }
+      }
+    } catch (_) {}
     await this.checkAdminStatus();
     await this.checkHealth();
     await this.loadFacets();
@@ -544,16 +552,35 @@ class AppController {
           const portLabels = {
             '554': 'Port 554 (RTSP)',
             '443': 'Port 443 (HTTPS Web)',
+            '8443': 'Port 8443 (HTTPS Web)',
             '80': 'Port 80 (HTTP Web)',
+            '81': 'Port 81 (HTTP Web)',
+            '82': 'Port 82 (HTTP Web)',
+            '83': 'Port 83 (HTTP Web)',
+            '84': 'Port 84 (HTTP Web)',
+            '85': 'Port 85 (HTTP Web)',
+            '88': 'Port 88 (HTTP Web)',
+            '90': 'Port 90 (HTTP Web)',
             '8554': 'Port 8554 (Alt RTSP)',
-            '8080': 'Port 8080 (Web RTSP)',
-            '8000': 'Port 8000 (Hikvision)',
-            '8050': 'Port 8050 (Panasonic)',
+            '8080': 'Port 8080 (HTTP Web)',
+            '8081': 'Port 8081 (HTTP Web)',
+            '8000': 'Port 8000 (Hikvision Web)',
+            '8050': 'Port 8050 (Panasonic Web)',
             '37777': 'Port 37777 (Dahua)'
           };
           this.portSelect.innerHTML = '<option value="">All Ports</option>';
           facets.ports.forEach(p => {
-            const label = portLabels[p.name] || `Port ${esc(p.name)}`;
+            const pNum = Number(p.name);
+            let label = portLabels[p.name];
+            if (!label) {
+              if (window.isHttpsCameraPort && window.isHttpsCameraPort(pNum)) {
+                label = `Port ${esc(p.name)} (HTTPS Web)`;
+              } else if (window.isWebCameraPort && window.isWebCameraPort(pNum)) {
+                label = `Port ${esc(p.name)} (HTTP Web)`;
+              } else {
+                label = `Port ${esc(p.name)}`;
+              }
+            }
             this.portSelect.innerHTML += `<option value="${esc(p.name)}">${label} (${(Number(p.count) || 0).toLocaleString()})</option>`;
           });
           if (currentPort) {
@@ -1205,7 +1232,15 @@ class AppController {
           return;
         }
 
-        const data = await res.json();
+        const rawText = await res.text();
+        let data = {};
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch (_) {
+          statusMsg.className = 'alert-box danger';
+          statusMsg.textContent = `Server error (HTTP ${res.status}): ${rawText.slice(0, 160) || 'Invalid response format'}`;
+          return;
+        }
         const esc = window.escapeHtml || (s => String(s ?? ''));
         if (res.ok && data.source !== 'error') {
           statusMsg.className = 'alert-box success';

@@ -23,7 +23,7 @@ logger = logging.getLogger("worldcams.security")
 # =====================================================================
 
 _CSRF_SECRET = hashlib.sha256(
-    f"worldcams-csrf-key-{settings.ADMIN_TOKEN}-{secrets.token_hex(16)}".encode("utf-8")
+    f"worldcams-csrf-key-v1-{settings.ADMIN_TOKEN}".encode("utf-8")
 ).digest()
 
 
@@ -236,11 +236,44 @@ FORBIDDEN_TARGET_PORTS = {
     21, 22, 23, 25, 53, 69, 110, 111, 135, 137, 138, 139, 143, 161, 389, 445,
     512, 513, 514, 636, 873, 993, 995, 1080, 1433, 1521, 2049, 2375, 2376, 2379,
     3306, 3389, 4444, 5432, 5672, 5900, 5984, 6379, 6443, 7001, 8500, 9000,
-    9042, 9092, 9200, 9300, 9997, 11211, 27017, 27018, 50000
+    9042, 9092, 9200, 9300, 9997, 11211, 27017, 27018
 }
 
 ALLOWED_SCHEMES = {"http", "https", "rtsp", "rtsps"}
 ALLOWED_DEMO_HOSTS = {"rtsp.stream", "images.unsplash.com"}
+
+HTTPS_CAMERA_PORTS = {443, 8443, 4443, 9443}
+RTSP_CAMERA_PORTS = {554, 8554, 10554, 5544, 7070, 7447, 37777}
+
+
+def is_https_camera_port(port: Optional[int]) -> bool:
+    """Return True if the port is a standard HTTPS camera port."""
+    try:
+        return int(port or 0) in HTTPS_CAMERA_PORTS
+    except (ValueError, TypeError):
+        return False
+
+
+def is_web_camera_port(port: Optional[int]) -> bool:
+    """
+    Return True if the port is an HTTP/HTTPS Web camera port (e.g. 80-99 including 81, 82, 83...,
+    443, 8443, 8000-8499, 8800-8899, 5000, 5001, 50000+, etc.) rather than a native RTSP port.
+    """
+    try:
+        p = int(port or 0)
+    except (ValueError, TypeError):
+        return False
+    if p in RTSP_CAMERA_PORTS:
+        return False
+    if p in HTTPS_CAMERA_PORTS:
+        return True
+    if 80 <= p <= 99:
+        return True
+    if 8000 <= p <= 8499 or 8800 <= p <= 8899:
+        return True
+    if p in (800, 3000, 5000, 5001, 5223, 9000, 9001, 9080, 10000, 50000, 50001, 50002, 50003, 60000, 60001):
+        return True
+    return False
 
 
 def validate_camera_ip(ip_str: str, port: Optional[int] = None) -> str:
@@ -649,14 +682,17 @@ class SecurityWAFMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        # 6. Issue CSRF Cookie on entry HTML pages (endpoint /api/security/csrf sets its own matching cookie)
-        if request.method == "GET" and path in ("/", "/index.html") and "worldcams_csrf" not in request.cookies:
+        # 6. Issue or self-heal CSRF Cookie on entry HTML pages (endpoint /api/security/csrf sets its own matching cookie)
+        existing_csrf = request.cookies.get("worldcams_csrf")
+        if request.method == "GET" and path in ("/", "/index.html") and (
+            not existing_csrf or not verify_csrf_token(existing_csrf)
+        ):
             csrf_token = generate_csrf_token()
             response.set_cookie(
                 key="worldcams_csrf",
                 value=csrf_token,
                 httponly=False,  # Accessible to same-origin JS to populate X-CSRF-Token header
-                samesite="strict",
+                samesite="lax",
                 path="/"
             )
 
@@ -664,12 +700,13 @@ class SecurityWAFMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         response.headers.setdefault("X-XSS-Protection", "1; mode=block")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        # Use strict-origin-when-cross-origin so OpenStreetMap tile servers receive the origin Referer
+        # (required by OSM Tile Usage Policy) without leaking internal paths or query parameters.
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         response.headers.setdefault(
             "Permissions-Policy",
-            "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=(self)"
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=*, fullscreen=*"
         )
-        response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
 
         # Apply default Content-Security-Policy if endpoint didn't set a stricter one
         if "Content-Security-Policy" not in response.headers:
@@ -678,10 +715,10 @@ class SecurityWAFMiddleware(BaseHTTPMiddleware):
                 "script-src 'self' https://unpkg.com https://cdn.jsdelivr.net; "
                 "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; "
                 "font-src 'self' https://fonts.gstatic.com data:; "
-                "img-src 'self' data: blob: https://*.openstreetmap.org https://images.unsplash.com; "
+                "img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.openstreetmap.org https://images.unsplash.com; "
                 "media-src 'self' blob: http: https:; "
-                "frame-src 'self' http://localhost:8889 http://127.0.0.1:8889 http://*:8889; "
-                "connect-src 'self' http://localhost:8889 http://127.0.0.1:8889 http://*:8889 ws: wss:; "
+                "frame-src 'self' http: https:; "
+                "connect-src 'self' http: https: ws: wss:; "
                 "object-src 'none'; "
                 "base-uri 'self'; "
                 "form-action 'self';"
@@ -693,9 +730,9 @@ class SecurityWAFMiddleware(BaseHTTPMiddleware):
     def _verify_csrf_protection(request: Request) -> Optional[str]:
         """
         Multi-layered CSRF defense for state-changing requests:
-        - Layer 1: Origin / Referer Host matching
+        - Layer 1: Origin / Referer Host matching & Sec-Fetch-Site verification
         - Layer 2: Reject cross-origin simple form Content-Types (application/x-www-form-urlencoded, multipart/form-data, text/plain)
-        - Layer 3: Double-Submit Cookie verification when browser CSRF cookie is present
+        - Layer 3: Double-Submit Cookie or Browser Same-Origin Custom Header / Fetch verification
         """
         host_hdr = (
             request.headers.get("x-forwarded-host")
@@ -705,37 +742,55 @@ class SecurityWAFMiddleware(BaseHTTPMiddleware):
 
         allowed_local_hosts = {host_hdr, "localhost", "127.0.0.1", "test"}
 
-        # Layer 1A: Check Origin header if present
+        # Layer 1A: Block cross-site Fetch Metadata
+        sec_fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+        if sec_fetch_site == "cross-site":
+            return "Cross-site request blocked by Sec-Fetch-Site policy"
+
+        # Layer 1B: Check Origin header if present
         origin = request.headers.get("origin")
+        origin_verified_same_host = False
         if origin:
             if origin.strip().lower() == "null":
                 return "Sandboxed 'null' Origin is not permitted for state-changing requests"
             origin_host = (urlparse(origin).hostname or "").strip().lower()
             if not origin_host or (origin_host != host_hdr and not (origin_host in allowed_local_hosts and host_hdr in allowed_local_hosts)):
                 return f"Origin '{origin}' does not match application host '{host_hdr}'"
+            origin_verified_same_host = True
 
-        # Layer 1B: Check Referer header if Origin is absent
+        # Layer 1C: Check Referer header if Origin is absent
         referer = request.headers.get("referer")
         if not origin and referer:
             ref_host = (urlparse(referer).hostname or "").strip().lower()
             if not ref_host or (ref_host != host_hdr and not (ref_host in allowed_local_hosts and host_hdr in allowed_local_hosts)):
                 return f"Referer '{referer}' does not match application host '{host_hdr}'"
+            origin_verified_same_host = True
 
         # Layer 2: Block browser HTML <form> Content-Types on API mutations
         ctype = (request.headers.get("content-type") or "").lower()
-        if any( ctype.startswith(form_ct) for form_ct in ("application/x-www-form-urlencoded", "multipart/form-data", "text/plain") ):
+        if any(ctype.startswith(form_ct) for form_ct in ("application/x-www-form-urlencoded", "multipart/form-data", "text/plain")):
             return f"Form Content-Type '{ctype}' is blocked on JSON API endpoints"
 
-        # Layer 3: Double-Submit CSRF Cookie check (when browser session has worldcams_csrf cookie)
+        # Layer 3: Double-Submit CSRF Cookie & Same-Origin Browser Fetch verification
         csrf_cookie = request.cookies.get("worldcams_csrf")
         if csrf_cookie:
             csrf_header = request.headers.get("x-csrf-token")
             admin_header = request.headers.get("x-admin-token")
-            # Allow if valid matching X-CSRF-Token OR valid X-Admin-Token is provided
+            x_req_with = (request.headers.get("x-requested-with") or "").strip().lower()
+
+            # 3a. Valid matching Double-Submit X-CSRF-Token
             if csrf_header and hmac.compare_digest(csrf_cookie, csrf_header) and verify_csrf_token(csrf_header):
                 return None
+            # 3b. Valid X-Admin-Token
             if admin_header and verify_admin_token_constant_time(admin_header):
                 return None
+            # 3c. Browser-enforced Sec-Fetch-Site: same-origin or custom X-Requested-With header on JSON API calls
+            # (Cross-origin pages cannot set Sec-Fetch-Site: same-origin, X-Requested-With, or application/json without preflight)
+            if sec_fetch_site == "same-origin" and ("application/json" in ctype or x_req_with == "xmlhttprequest" or origin_verified_same_host):
+                return None
+            if x_req_with == "xmlhttprequest" and (origin_verified_same_host or "application/json" in ctype):
+                return None
+
             return "Missing or invalid X-CSRF-Token header for active browser session"
 
         return None

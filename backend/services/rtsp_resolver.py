@@ -7,7 +7,12 @@ from typing import Optional, List, Tuple, Dict, Any
 from urllib.parse import urlparse, urljoin
 import httpx
 from backend.config import get_legacy_ssl_context
-from backend.security import inspect_stream_chunk_safety, extract_stream_sources_from_html
+from backend.security import (
+    inspect_stream_chunk_safety,
+    extract_stream_sources_from_html,
+    is_https_camera_port,
+    is_web_camera_port,
+)
 
 logger = logging.getLogger("worldcams.resolver")
 
@@ -874,10 +879,10 @@ class VendorRtspResolver:
         auth_required_candidates: List[Tuple[str, Optional[str], Optional[str]]] = []  # (path, realm, nonce)
 
         # =====================================================================
-        # Phase 1: RTSP Probing (Ports 554, 8554 or explicit rtsp:// URLs)
+        # Phase 1: RTSP Probing (Ports 554, 8554 or explicit non-web rtsp:// URLs)
         # Step 1A: Probe ALL candidate paths WITHOUT credentials first!
         # =====================================================================
-        if port in (554, 8554) or (port not in (443, 80, 8080, 8050, 8000) and "rtsp://" in current_url):
+        if not is_web_camera_port(port) and (port in (554, 8554, 10554, 5544, 7070, 7447, 37777) or "rtsp://" in current_url):
             logger.info(f"Continuous RTSP probing (unauthenticated pass) for {ip}:{port} (Vendor: {vendor_key.upper()}, Candidates: {len(candidate_paths)})...")
 
             # Process ALL candidate paths in concurrent batches of 8 without credentials
@@ -963,11 +968,11 @@ class VendorRtspResolver:
                         }
 
         # =====================================================================
-        # Phase 2: HTTP/HTTPS Web Camera Probing (Ports 443, 80, 8080, 8050, 8000 or RTSP fallback)
+        # Phase 2: HTTP/HTTPS Web Camera Probing (Ports 80-99, 443, 8000-8499, etc. or RTSP fallback)
         # Continuous batch probing across live MJPEG / JPEG snapshot paths
         # =====================================================================
-        if port in (443, 80, 8080, 8050, 8000) or not current_url.startswith("rtsp://"):
-            is_https = (port == 443) or current_url.startswith("https://")
+        if is_web_camera_port(port) or not current_url.startswith("rtsp://"):
+            is_https = is_https_camera_port(port) or current_url.startswith("https://")
             scheme = "https" if is_https else "http"
             probe_timeout = 2.2 if is_https else 1.5
             logger.info(f"Parallel {scheme.upper()} Web stream probing for {ip}:{port} (timeout={probe_timeout}s)...")

@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from backend.config import settings
+from backend.security import is_https_camera_port, is_web_camera_port
 
 logger = logging.getLogger("worldcams.recon")
 
@@ -149,15 +150,18 @@ class CameraReconService:
             org = geo.get("org") or geo.get("isp") or t.get("org") or "Surveillance Provider"
             asn = geo.get("as", "")
 
-            if port == 443:
+            feed_id = f"live-{ip.replace('.', '-')}-{port}"
+            stream_path = f"live_{ip.replace('.', '_')}_{port}"
+
+            if is_https_camera_port(port):
                 stream_url = t.get("stream_url") or f"https://{ip}:{port}/"
                 screenshot = t.get("screenshot_url") or f"https://{ip}:{port}/"
-            elif port in (80, 8080, 8050, 8000):
+            elif is_web_camera_port(port):
                 stream_url = t.get("stream_url") or f"http://{ip}:{port}/"
                 screenshot = t.get("screenshot_url") or f"http://{ip}:{port}/"
             else:
                 stream_url = t.get("stream_url") or f"rtsp://{ip}:{port}/onvif1"
-                screenshot = t.get("screenshot_url") or f"http://{ip}:{port}/"
+                screenshot = t.get("screenshot_url") or "https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=600&auto=format&fit=crop&q=80"
 
             final_feeds.append({
                 "id": feed_id,
@@ -283,11 +287,15 @@ class CameraReconService:
                         if strong:
                             ip = strong.text.strip()
                             if ip and not any(r["ip"] == ip for r in results):
+                                default_s_url = (
+                                    f"https://{ip}:{detected_port}/" if is_https_camera_port(detected_port)
+                                    else (f"http://{ip}:{detected_port}/" if is_web_camera_port(detected_port) else f"rtsp://{ip}:{detected_port}/live")
+                                )
                                 results.append({
                                     "ip": ip,
                                     "port": detected_port,
-                                    "product": "RTSP Exposed Camera",
-                                    "stream_url": f"rtsp://{ip}:{detected_port}/live"
+                                    "product": "Exposed IP Camera" if is_web_camera_port(detected_port) else "RTSP Exposed Camera",
+                                    "stream_url": default_s_url
                                 })
                                 if len(results) >= limit:
                                     break
@@ -425,14 +433,14 @@ class CameraReconService:
             "isp": match.get("isp", org),
             "asn": match.get("asn", ""),
             "product": match.get("product", "Exposed IP Camera"),
-            "rtsp_url": f"https://{ip}:{port}/" if port == 443 else (f"http://{ip}:{port}/" if port in (80, 8080, 8050, 8000) else f"rtsp://{ip}:{port}/onvif1"),
+            "rtsp_url": f"https://{ip}:{port}/" if is_https_camera_port(port) else (f"http://{ip}:{port}/" if is_web_camera_port(port) else f"rtsp://{ip}:{port}/onvif1"),
             "stream_path": f"shodan_{ip.replace('.', '_')}_{port}",
             "auth_status": "unauthenticated",
             "risk_level": "critical",
             "banner": match.get("data", "")[:800],
             "last_seen": match.get("timestamp", "2026-10-15T19:00:00Z"),
             "tags": match.get("tags", ["camera", "rtsp"]),
-            "screenshot_url": f"https://{ip}:{port}/" if port == 443 else (f"http://{ip}:{port}/" if port in (80, 8080, 8050, 8000) else "https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=600&auto=format&fit=crop&q=80"),
+            "screenshot_url": f"https://{ip}:{port}/" if is_https_camera_port(port) else (f"http://{ip}:{port}/" if is_web_camera_port(port) else "https://images.unsplash.com/photo-1557597774-9d273605dfa9?w=600&auto=format&fit=crop&q=80"),
             "notes": f"Imported via Shodan API on port {port}.",
             "is_favorite": False
         }
