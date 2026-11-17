@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/css/styles.css?v=8800">
+  <link rel="stylesheet" href="/css/styles.css?v=8801">
 
   <!-- Scripts -->
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -78,7 +78,7 @@
       <button class="btn btn-secondary" id="btn-open-education">
         <i data-lucide="shield-alert"></i> Awareness &amp; Guides
       </button>
-      <button class="btn btn-icon" id="btn-open-settings" title="Configuration &amp; Admin Settings">
+      <button class="btn-icon" id="btn-open-settings" title="Configuration &amp; Admin Settings">
         <i data-lucide="settings"></i>
       </button>
     </div>
@@ -258,9 +258,6 @@
               <a class="btn-icon text-accent" id="btn-open-web-cam" target="_blank" rel="noopener noreferrer" title="Open Camera Web GUI in New Tab" style="display: none;">
                 <i data-lucide="external-link"></i>
               </a>
-              <button class="btn-icon text-accent" id="btn-resolve-rtsp" title="Auto-probe vendor RTSP paths & profiles">
-                <i data-lucide="scan"></i>
-              </button>
               <button class="btn-icon" id="btn-toggle-favorite" title="Bookmark camera">
                 <i data-lucide="bookmark"></i>
               </button>
@@ -364,11 +361,6 @@
                 <div class="audit-item col-span-2">
                   <span class="label">MediaMTX Path</span>
                   <span class="val font-mono" id="audit-path">--</span>
-                </div>
-                <div class="audit-item col-span-2" style="margin-top: 4px;">
-                  <button class="btn btn-sm btn-outline" id="btn-probe-vendor" style="width: 100%; justify-content: center; gap: 6px; font-weight: 600; border-color: rgba(59, 130, 246, 0.4);">
-                    <i data-lucide="scan"></i> Auto-Probe Vendor RTSP Profiles & Subpaths
-                  </button>
                 </div>
               </div>
               <div class="audit-notes" id="audit-notes-box">

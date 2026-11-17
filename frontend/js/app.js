@@ -276,14 +276,6 @@ class AppController {
       this.toggleFavoriteCurrent();
     });
 
-    // Auto-probe RTSP Resolver buttons
-    document.getElementById('btn-resolve-rtsp')?.addEventListener('click', () => {
-      this.resolveRtspCurrentFeed();
-    });
-    document.getElementById('btn-probe-vendor')?.addEventListener('click', () => {
-      this.resolveRtspCurrentFeed();
-    });
-
     // Admin Delete feed button in Inspector
     document.getElementById('btn-delete-feed')?.addEventListener('click', () => {
       this.deleteCurrentFeed();
@@ -1100,96 +1092,6 @@ class AppController {
   async toggleFavoriteCurrent() {
     if (!this.selectedFeed) return;
     await this.toggleFavoriteFeed(this.selectedFeed);
-  }
-
-  // ==========================================
-  // Vendor RTSP Profile & Resolver Engine
-  // ==========================================
-
-  async resolveRtspCurrentFeed() {
-    if (!this.selectedFeed) {
-      alert('Please select a camera from the list first to probe vendor RTSP paths.');
-      return;
-    }
-
-    const feed = this.selectedFeed;
-    const btnIcon = document.getElementById('btn-resolve-rtsp');
-    const btnProbe = document.getElementById('btn-probe-vendor');
-
-    const origIconHtml = btnIcon ? btnIcon.innerHTML : '';
-    const origProbeHtml = btnProbe ? btnProbe.innerHTML : '';
-
-    if (btnIcon) {
-      btnIcon.innerHTML = '<i data-lucide="loader-2" class="spin"></i>';
-      btnIcon.disabled = true;
-    }
-    if (btnProbe) {
-      btnProbe.innerHTML = '<i data-lucide="loader-2" class="spin"></i> Probing Vendor Subpaths...';
-      btnProbe.disabled = true;
-    }
-    lucide.createIcons();
-
-    if (window.streamPlayer) {
-      window.streamPlayer.setStatus('CONNECTING', `Probing vendor RTSP paths for ${feed.product || 'Camera'}...`);
-    }
-
-    try {
-      const res = await fetch('/api/streams/resolve-rtsp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          feed_id: feed.id,
-          ip: feed.ip,
-          port: feed.port,
-          product: feed.product,
-          current_url: feed.rtsp_url
-        })
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${res.status}`);
-      }
-
-      const result = await res.json();
-      console.log('RTSP Resolver probe result:', result);
-
-      if (result.resolved) {
-        feed.rtsp_url = result.stream_url;
-        if (result.protocol === 'http') {
-          feed.screenshot_url = result.stream_url;
-        }
-        feed.notes = `[Auto-Resolved ${result.vendor.toUpperCase()}] ${result.message}`;
-        if (result.auth && result.auth !== 'unauthenticated') {
-          feed.auth_status = 'default_creds';
-        }
-
-        // Refresh player view with newly discovered stream
-        if (window.streamPlayer) {
-          window.streamPlayer.playFeed(feed);
-        }
-
-        alert(`RTSP Stream Resolved!\n\nVendor: ${result.vendor.toUpperCase()}\nProtocol: ${result.protocol.toUpperCase()}\nPath: ${result.stream_url}\nProbed: ${result.tested_count} candidates\n\nStatus: ${result.message}`);
-      } else {
-        if (window.streamPlayer) {
-          window.streamPlayer.setStatus('OFFLINE', `No open vendor subpath found (${result.tested_count} tested).`);
-        }
-        alert(`Probe Complete: No active stream found.\n\nVendor Profile: ${result.vendor.toUpperCase()}\nCandidates tested: ${result.tested_count}\nDetails: ${result.message}`);
-      }
-    } catch (err) {
-      console.error('RTSP Resolve error:', err);
-      alert('Error during RTSP resolution probe: ' + err.message);
-    } finally {
-      if (btnIcon) {
-        btnIcon.innerHTML = origIconHtml;
-        btnIcon.disabled = false;
-      }
-      if (btnProbe) {
-        btnProbe.innerHTML = origProbeHtml;
-        btnProbe.disabled = false;
-      }
-      lucide.createIcons();
-    }
   }
 
   // ==========================================

@@ -85,24 +85,18 @@ Many surveillance cameras run outdated firmware that causes modern browsers to f
 - **`SSL_ERROR_RX_RECORD_TOO_LONG`**: Occurs when a camera serves unencrypted plaintext HTTP on port 443. WorldCams detects this protocol mismatch and automatically falls back to plaintext HTTP through the proxy gateway.
 - **`SSL_ERROR_UNSUPPORTED_VERSION`**: Occurs because modern browsers have disabled TLS 1.0 and TLS 1.1. WorldCams includes a dedicated legacy SSL context (`@SECLEVEL=0`) that bridges older camera handshakes and serves them cleanly to your browser.
 
-### 4. Smart Vendor RTSP Auto-Resolver
-When an RTSP stream fails to negotiate:
-- Click **⚡ Auto-Resolve RTSP** to trigger the multi-vendor scanning engine.
-- Tests known manufacturer subpaths (Hikvision, Dahua, Reolink, Axis, Tapo, Uniview, Mobotix, etc.).
-- Performs RFC Digest Authentication against common factory default credentials.
-
-### 5. Multi-Faceted Filtering & Map Navigation
+### 4. Multi-Faceted Filtering & Map Navigation
 - Filter instantaneously by **Port** (`554`, `443`, `80`, `8000`, `8080`), **Country**, **Vendor/Product**, or **Authentication Status**.
 - Click **Triage Mode** to expand the player to a full-width monitoring workstation.
 - Use the dark-mode **Leaflet Map** to zoom into specific geographical regions.
 
-### 6. Admin Token & Batch Deletion
+### 5. Admin Token & Batch Deletion
 - **Admin Key**: Configured via `ADMIN_TOKEN` in `.env` (default: `worldcams-admin-2026`).
 - Enter the admin token in **⚙️ Settings** to unlock feed deletion:
   - Delete individual cameras directly from the player toolbar.
   - Enable **Select Cards** on the feed browser to batch-delete multiple feeds in one click.
 
-### 7. Tor Anonymizer Proxy & Circuit Rotation (Opt-In)
+### 6. Tor Anonymizer Proxy & Circuit Rotation (Opt-In)
 WorldCams supports optional routing and automatic exit-circuit rotation over **Tor SOCKS5** (`disabled by default` — starts in `OFF (DIRECT)` mode):
 - **Toggle Anywhere**: Click **`TOR PRIVACY PROXY`** in the top navbar, the shield button in the player controls, or configure it in **⚙️ Settings**.
 - **Full Backend Coverage**: When enabled, HTTP/HTTPS camera proxies (`/api/proxy/stream`, `/api/proxy/web`), RTSP probing & MediaMTX RTSP pulls (via an internal local **TCP-to-SOCKS5 bridge**), and Shodan/Insecam/GeoIP lookups all route through Tor.
@@ -120,7 +114,7 @@ sudo apt install tor && sudo systemctl enable --now tor
 ```
 *(Tor Browser's SOCKS5 listener on port `9150` is also auto-detected when port `9050` is closed.)*
 
-### 8. Security Hardening & WAF
+### 7. Security Hardening & WAF
 - **WAF Middleware**: Blocks Path Traversal (`/../etc/passwd`, `/.env`, `/.git`), SQL Injection, XSS, Command Injection, and automated scanner User-Agents (`sqlmap`, etc.) with HTTP `403`.
 - **Multi-Layered CSRF Protection**: Validates `Origin`/`Referer` hosts, `Sec-Fetch-Site` Fetch Metadata, blocks HTML `<form>` Content-Types on JSON APIs, and enforces HMAC-signed Double-Submit tokens (`worldcams_csrf` cookie + `X-CSRF-Token` header) with automatic cookie self-healing.
 - **SSRF Protection**: Blocks cloud metadata (`169.254.169.254`), DNS hostnames/rebinding, restricted internal ports (SSH, MediaMTX Control API), and cross-host redirects.
