@@ -692,6 +692,317 @@ async def test_full_pipeline():
         assert cross_site_fetch_res.status_code == 403, "Expected Sec-Fetch-Site: cross-site to be blocked with 403"
         print("    -> CSRF protection (Origin, Form Content-Type, Double-Submit HMAC, Cookie Self-Healing, Sec-Fetch-Site) verified")
 
+        # 17. Tor Anonymizer Proxy, Circuit Rotation (IsolateSocksAuth), RTSP Bridge & Fail-Closed Protection
+        print("[*] Testing Tor Proxy Routing, Circuit Rotation, RTSP Bridge & Fail-Closed (503)...")
+        import socket
+        from backend.services.tor_service import tor_service
+        from backend.services.rtsp_resolver import rtsp_resolver
+
+        client.cookies.clear()
+        fresh_csrf_res = await client.get("/api/security/csrf")
+        assert fresh_csrf_res.status_code == 200
+        tor_csrf_token = fresh_csrf_res.json()["csrf_token"]
+        tor_post_headers = {"X-CSRF-Token": tor_csrf_token}
+        tor_admin_headers = {**headers, "X-CSRF-Token": tor_csrf_token}
+
+        # 17a. Verify Tor is disabled by default (non attiva a priori)
+        tor_def_res = await client.get("/api/tor/status")
+        assert tor_def_res.status_code == 200
+        assert tor_def_res.json()["enabled"] is False, "Tor MUST be disabled by default!"
+        health_def_res = await client.get("/api/health")
+        assert health_def_res.status_code == 200
+        assert health_def_res.json()["tor_enabled"] is False
+        print("    -> Confirmed Tor proxy defaults to OFF (direct) at startup")
+
+        # Start mock target camera server (handles both HTTP image/portal & RTSP OPTIONS)
+        target_hits = 0
+
+        async def handle_tor_target_cam(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            nonlocal target_hits
+            try:
+                raw_req = await asyncio.wait_for(reader.read(4096), timeout=3.0)
+                if not raw_req:
+                    return
+                target_hits += 1
+                text_req = raw_req.decode("utf-8", errors="ignore")
+                first_line = text_req.splitlines()[0] if text_req else ""
+                if "RTSP/1.0" in first_line:
+                    cseq = "1"
+                    for ln in text_req.splitlines():
+                        if ln.lower().startswith("cseq:"):
+                            cseq = ln.split(":", 1)[1].strip()
+                            break
+                    rtsp_reply = (
+                        f"RTSP/1.0 200 OK\r\n"
+                        f"CSeq: {cseq}\r\n"
+                        f"Public: DESCRIBE, SETUP, PLAY, TEARDOWN\r\n\r\n"
+                    ).encode("ascii")
+                    writer.write(rtsp_reply)
+                    await writer.drain()
+                else:
+                    req_path = first_line.split(" ")[1] if len(first_line.split(" ")) >= 2 else "/"
+                    if req_path.startswith("/cam.jpg"):
+                        hdr = (
+                            b"HTTP/1.1 200 OK\r\n"
+                            b"Content-Type: image/jpeg\r\n"
+                            b"Connection: close\r\n"
+                            + f"Content-Length: {len(JPEG_SOI_EOI)}\r\n\r\n".encode()
+                        )
+                        writer.write(hdr + JPEG_SOI_EOI)
+                    else:
+                        body = (
+                            b"<html><head><title>Tor Cam Portal</title></head>"
+                            b"<body><script>evilTorProbe()</script><img src='/cam.jpg'></body></html>"
+                        )
+                        hdr = (
+                            b"HTTP/1.1 200 OK\r\n"
+                            b"Content-Type: text/html; charset=utf-8\r\n"
+                            b"Connection: close\r\n"
+                            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+                        )
+                        writer.write(hdr + body)
+                    await writer.drain()
+            except Exception:
+                pass
+            finally:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+
+        # Start local RFC 1928 + RFC 1929 (0x02 Username/Password) Mock SOCKS5 Server
+        socks_events = []
+
+        async def _relay_pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter):
+            try:
+                while True:
+                    chunk = await src.read(4096)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    await dst.drain()
+            except Exception:
+                pass
+            finally:
+                try:
+                    dst.close()
+                except Exception:
+                    pass
+
+        async def handle_mock_socks5(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            up_writer = None
+            try:
+                ver_n = await reader.readexactly(2)
+                if ver_n[0] != 5:
+                    return
+                methods = await reader.readexactly(ver_n[1])
+                uname = ""
+                passwd = ""
+                if 0x02 in methods:
+                    writer.write(b"\x05\x02")
+                    await writer.drain()
+                    subver = await reader.readexactly(1)
+                    if subver[0] != 1:
+                        return
+                    ulen = (await reader.readexactly(1))[0]
+                    uname = (await reader.readexactly(ulen)).decode("utf-8", errors="ignore")
+                    plen = (await reader.readexactly(1))[0]
+                    passwd = (await reader.readexactly(plen)).decode("utf-8", errors="ignore")
+                    writer.write(b"\x01\x00")
+                    await writer.drain()
+                elif 0x00 in methods:
+                    writer.write(b"\x05\x00")
+                    await writer.drain()
+                else:
+                    writer.write(b"\x05\xff")
+                    await writer.drain()
+                    return
+
+                req_hdr = await reader.readexactly(4)
+                if req_hdr[0] != 5 or req_hdr[1] != 1:
+                    writer.write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+                    await writer.drain()
+                    return
+                atyp = req_hdr[3]
+                if atyp == 0x01:
+                    dst_host = socket.inet_ntoa(await reader.readexactly(4))
+                elif atyp == 0x03:
+                    dlen = (await reader.readexactly(1))[0]
+                    dst_host = (await reader.readexactly(dlen)).decode("utf-8", errors="ignore")
+                elif atyp == 0x04:
+                    dst_host = socket.inet_ntop(socket.AF_INET6, await reader.readexactly(16))
+                else:
+                    writer.write(b"\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00")
+                    await writer.drain()
+                    return
+                dst_port = int.from_bytes(await reader.readexactly(2), "big")
+                socks_events.append({
+                    "user": uname,
+                    "password": passwd,
+                    "host": dst_host,
+                    "port": dst_port,
+                })
+
+                up_reader, up_writer = await asyncio.open_connection(dst_host, dst_port)
+                writer.write(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x00")
+                await writer.drain()
+
+                await asyncio.gather(
+                    _relay_pipe(reader, up_writer),
+                    _relay_pipe(up_reader, writer),
+                    return_exceptions=True,
+                )
+            except Exception:
+                pass
+            finally:
+                for w in (writer, up_writer):
+                    if w is not None:
+                        try:
+                            w.close()
+                        except Exception:
+                            pass
+
+        tor_target_srv = await asyncio.start_server(handle_tor_target_cam, "127.0.0.1", 0)
+        tor_cam_port = tor_target_srv.sockets[0].getsockname()[1]
+        mock_socks_srv = await asyncio.start_server(handle_mock_socks5, "127.0.0.1", 0)
+        mock_socks_port = mock_socks_srv.sockets[0].getsockname()[1]
+        tor_test_feed_id = f"test_tor_cam_{tor_cam_port}"
+
+        orig_bypass_loopback = tor_service.bypass_loopback
+        tor_service.bypass_loopback = False
+        try:
+            async with AsyncSessionLocal() as db_sess:
+                db_sess.add(CameraFeedModel(
+                    id=tor_test_feed_id,
+                    ip="127.0.0.1",
+                    port=tor_cam_port,
+                    product="Tor Test Cam",
+                    rtsp_url=f"http://127.0.0.1:{tor_cam_port}/cam.jpg",
+                    screenshot_url=f"http://127.0.0.1:{tor_cam_port}/cam.jpg",
+                    stream_path=tor_test_feed_id,
+                    country_code="DE",
+                    country_name="Germany"
+                ))
+                await db_sess.commit()
+
+            # 17b. Enable Tor pointing to mock SOCKS5 proxy
+            cfg_res = await client.post("/api/tor/config", json={
+                "enabled": True,
+                "auto_rotate": False,
+                "socks_host": "127.0.0.1",
+                "socks_port": mock_socks_port,
+                "control_port": 9051,
+            }, headers=tor_post_headers)
+            assert cfg_res.status_code == 200, f"Tor config enable failed: {cfg_res.text}"
+            cfg_json = cfg_res.json()
+            assert cfg_json["enabled"] is True and cfg_json["socks_alive"] is True
+            gen_initial = cfg_json["circuit_generation"]
+            cid_initial = cfg_json["circuit_id"]
+
+            # HTTP Stream proxy over SOCKS5
+            ev_count_before = len(socks_events)
+            t_stream_res = await client.get("/api/proxy/stream", params={"url": f"http://127.0.0.1:{tor_cam_port}/cam.jpg"})
+            assert t_stream_res.status_code == 200, f"Tor proxied /api/proxy/stream failed: {t_stream_res.text}"
+            assert t_stream_res.headers.get("x-tor-routed") == "true"
+            assert t_stream_res.headers.get("x-tor-circuit") == cid_initial
+            assert len(socks_events) > ev_count_before, "Expected /api/proxy/stream to traverse SOCKS5"
+            first_socks_ev = socks_events[-1]
+            assert first_socks_ev["host"] == "127.0.0.1" and first_socks_ev["port"] == tor_cam_port
+            assert first_socks_ev["user"].startswith("wc_"), f"Expected IsolateSocksAuth username, got {first_socks_ev}"
+
+            # Isolated Web Portal gateway over SOCKS5
+            ev_count_before = len(socks_events)
+            t_web_res = await client.get(
+                "/api/proxy/web",
+                params={"url": f"http://127.0.0.1:{tor_cam_port}/", "format": "json"}
+            )
+            assert t_web_res.status_code == 200, f"Tor proxied /api/proxy/web failed: {t_web_res.text}"
+            assert t_web_res.headers.get("x-tor-routed") == "true"
+            assert t_web_res.json().get("tor_routed") is True
+            assert len(socks_events) > ev_count_before, "Expected /api/proxy/web to traverse SOCKS5"
+
+            # RTSP prober over SOCKS5
+            ev_count_before = len(socks_events)
+            rtsp_ok, rtsp_code, _, _, _ = await rtsp_resolver.probe_rtsp_path("127.0.0.1", tor_cam_port, "/h264", timeout=2.0)
+            assert rtsp_ok is True and rtsp_code == 200, f"RTSP probe over SOCKS5 failed: code={rtsp_code}"
+            assert len(socks_events) > ev_count_before, "Expected RTSP probe to traverse SOCKS5"
+
+            # RTSP Bridge (for MediaMTX) over SOCKS5
+            ev_count_before = len(socks_events)
+            bridge_port = await tor_service.ensure_rtsp_bridge("test_tor_bridge", "127.0.0.1", tor_cam_port)
+            br_reader, br_writer = await asyncio.open_connection("127.0.0.1", bridge_port)
+            br_writer.write(b"OPTIONS rtsp://127.0.0.1/h264 RTSP/1.0\r\nCSeq: 77\r\n\r\n")
+            await br_writer.drain()
+            br_resp = (await asyncio.wait_for(br_reader.read(4096), timeout=2.5)).decode("utf-8", errors="ignore")
+            br_writer.close()
+            await tor_service.stop_rtsp_bridge("test_tor_bridge")
+            assert "RTSP/1.0 200 OK" in br_resp and "CSeq: 77" in br_resp, f"RTSP bridge response invalid: {br_resp}"
+            assert len(socks_events) > ev_count_before, "Expected MediaMTX RTSP bridge to traverse SOCKS5"
+            print("    -> HTTP stream, Web portal, RTSP prober, and RTSP bridge all routed via Tor SOCKS5 with IsolateSocksAuth")
+
+            # 17c. Circuit rotation increments generation & rotates SOCKS5 IsolateSocksAuth credentials
+            rot_res = await client.post("/api/tor/rotate", headers=tor_post_headers)
+            assert rot_res.status_code == 200
+            rot_json = rot_res.json()
+            assert rot_json["circuit_generation"] > gen_initial
+            assert rot_json["circuit_id"] != cid_initial
+
+            await client.get("/api/proxy/stream", params={"url": f"http://127.0.0.1:{tor_cam_port}/cam.jpg"})
+            rotated_socks_ev = socks_events[-1]
+            assert rotated_socks_ev["user"] != first_socks_ev["user"] or rotated_socks_ev["password"] != first_socks_ev["password"], (
+                "Expected rotated SOCKS5 IsolateSocksAuth credentials after /api/tor/rotate"
+            )
+            print(f"    -> Circuit rotation verified ({cid_initial} -> {rot_json['circuit_id']})")
+
+            # 17d. Fail-closed verification: unreachable SOCKS5 proxy must return 503 with ZERO direct leakage
+            mock_socks_srv.close()
+            await mock_socks_srv.wait_closed()
+            # Reserve an unused ephemeral port then immediately close it so SOCKS5 fails closed
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tmp_sock:
+                tmp_sock.bind(("127.0.0.1", 0))
+                closed_socks_port = tmp_sock.getsockname()[1]
+
+            fc_cfg = await client.post("/api/tor/config", json={
+                "enabled": True,
+                "auto_rotate": False,
+                "socks_host": "127.0.0.1",
+                "socks_port": closed_socks_port,
+                "control_port": 9051,
+            }, headers=tor_post_headers)
+            assert fc_cfg.status_code == 200
+            assert fc_cfg.json()["socks_alive"] is False
+
+            hits_before_fc = target_hits
+            fc_stream_res = await client.get("/api/proxy/stream", params={"url": f"http://127.0.0.1:{tor_cam_port}/cam.jpg"})
+            assert fc_stream_res.status_code == 503, f"Expected fail-closed 503 on /api/proxy/stream, got {fc_stream_res.status_code}"
+            fc_web_res = await client.get("/api/proxy/web", params={"url": f"http://127.0.0.1:{tor_cam_port}/", "format": "json"})
+            assert fc_web_res.status_code == 503, f"Expected fail-closed 503 on /api/proxy/web, got {fc_web_res.status_code}"
+            fc_play_res = await client.post("/api/streams/play", json={"feed_id": tor_test_feed_id}, headers=tor_post_headers)
+            assert fc_play_res.status_code == 503, f"Expected fail-closed 503 on /api/streams/play, got {fc_play_res.status_code}"
+            assert target_hits == hits_before_fc, "Privacy leak: target camera was contacted directly while Tor was fail-closed!"
+            print("    -> Fail-closed privacy guarantee verified (HTTP 503 & 0 direct leak hits when SOCKS5 offline)")
+        finally:
+            try:
+                await client.post("/api/feeds/batch-delete", json={"feed_ids": [tor_test_feed_id]}, headers=tor_admin_headers)
+            except Exception:
+                pass
+            tor_service.bypass_loopback = orig_bypass_loopback
+            await tor_service.update_config(
+                enabled=False,
+                auto_rotate=True,
+                socks_host="127.0.0.1",
+                socks_port=9050,
+                control_port=9051,
+            )
+            await tor_service.shutdown()
+            tor_target_srv.close()
+            await tor_target_srv.wait_closed()
+            try:
+                mock_socks_srv.close()
+                await mock_socks_srv.wait_closed()
+            except Exception:
+                pass
+
     print("\n[✓] ALL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":

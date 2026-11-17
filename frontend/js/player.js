@@ -136,8 +136,11 @@ class StreamPlayer {
     if (!this.badgeEl) return;
     
     const stateClass = state.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const torActive = Boolean(this.currentFeedTorRouted || window.app?.torStatus?.enabled);
+    const showTorTag = torActive && (state.startsWith('LIVE') || state.startsWith('ISOLATED WEB'));
+    const displayLabel = showTorTag ? `${state} [TOR]` : state;
     this.badgeEl.className = 'live-pill ' + stateClass;
-    this.badgeEl.innerHTML = `<span class="dot"></span> ${window.escapeHtml(state)}`;
+    this.badgeEl.innerHTML = `<span class="dot"></span> ${window.escapeHtml(displayLabel)}`;
     
     if (state.startsWith('ISOLATED WEB PORTAL') || state.startsWith('ACTIVE WEB CONSOLE')) {
       if (this.overlayEl) this.overlayEl.style.display = 'none';
@@ -255,6 +258,16 @@ class StreamPlayer {
         if (this.webConsoleSourceCode) {
           this.webConsoleSourceCode.textContent = data.source_preview || '<!-- Empty portal body -->';
         }
+      } else if (res.status === 503) {
+        let errDetail = 'Tor SOCKS5 proxy unreachable (fail-closed privacy protection)';
+        try {
+          const errJson = await res.json();
+          if (errJson?.detail) errDetail = errJson.detail;
+        } catch (_) {}
+        this.setStatus('TOR PROXY OFFLINE', errDetail);
+        if (this.webConsoleSourceCode) {
+          this.webConsoleSourceCode.textContent = `[FAIL-CLOSED 503] ${errDetail}`;
+        }
       } else {
         if (this.webConsoleSourceCode) {
           this.webConsoleSourceCode.textContent = 'Portal unreachable or connection refused by remote camera.';
@@ -290,6 +303,7 @@ class StreamPlayer {
       this.telemetryInterval = null;
     }
     this.isSnapshotLoaded = false;
+    this.currentFeedTorRouted = false;
 
     // 3. Clear Isolated Portal card & source preview
     if (this.webConsoleDisplay) {
@@ -378,8 +392,19 @@ class StreamPlayer {
         signal
       });
       if (this.activeFeedId !== targetId) return;
+      if (playRes.status === 503) {
+        let errDetail = 'Tor SOCKS5 proxy unreachable (fail-closed privacy protection)';
+        try {
+          const errJson = await playRes.json();
+          if (errJson?.detail) errDetail = errJson.detail;
+        } catch (_) {}
+        this.setStatus('TOR PROXY OFFLINE', errDetail);
+        if (this.techProto) this.techProto.textContent = 'Tor SOCKS5 Unreachable (Fail-Closed)';
+        return;
+      }
       if (playRes.ok) {
         streamInfo = await playRes.json();
+        this.currentFeedTorRouted = Boolean(streamInfo.tor_routed);
       }
     } catch (e) {
       if (e.name === 'AbortError') return;
@@ -411,6 +436,9 @@ class StreamPlayer {
     const effectiveCheckUrl = ((streamInfo && streamInfo.rtsp_source) || customUrl || feed.rtsp_url || '').toLowerCase();
     const isContinuousMjpeg = (streamInfo && streamInfo.stream_type === 'mjpeg') ||
       ['mjpg', 'mjpeg', 'nphmotionjpeg', 'video.cgi', 'faststream', 'videostream.cgi'].some(k => effectiveCheckUrl.includes(k));
+    const torTag = streamInfo?.tor_routed
+      ? ` [TOR ${streamInfo.tor_circuit_id || ''}]`.trimEnd()
+      : (window.app?.torStatus?.enabled ? ' [TOR]' : '');
 
     this.snapshotEl.onload = () => {
       if (this.activeFeedId !== targetId) return;
@@ -420,8 +448,8 @@ class StreamPlayer {
       this.setStatus(`LIVE ${protoLabel}`);
       if (this.techProto) {
         this.techProto.textContent = isContinuousMjpeg
-          ? `${protoLabel}/MJPEG Isolated Stream (Port ${portNum})`
-          : `${protoLabel}/JPEG Isolated Snapshot (Port ${portNum})`;
+          ? `${protoLabel}/MJPEG Isolated Stream (Port ${portNum})${torTag}`
+          : `${protoLabel}/JPEG Isolated Snapshot (Port ${portNum})${torTag}`;
       }
     };
 
@@ -673,12 +701,29 @@ class StreamPlayer {
         return;
       }
 
+      if (res.status === 503) {
+        let errDetail = 'Tor SOCKS5 proxy unreachable (fail-closed privacy protection)';
+        try {
+          const errJson = await res.json();
+          if (errJson?.detail) errDetail = errJson.detail;
+        } catch (_) {}
+        if (this.connectTimeoutTimer) {
+          clearTimeout(this.connectTimeoutTimer);
+          this.connectTimeoutTimer = null;
+        }
+        this.setStatus('TOR PROXY OFFLINE', errDetail);
+        if (this.techProto) this.techProto.textContent = 'Tor SOCKS5 Unreachable (Fail-Closed)';
+        return;
+      }
+
       if (!res.ok) {
         throw new Error(`MediaMTX bridge returned status ${res.status}`);
       }
 
       const streamData = await res.json();
       if (this.activeFeedId !== targetId) return;
+      this.currentFeedTorRouted = Boolean(streamData.tor_routed);
+      this.currentFeedTorCircuit = streamData.tor_circuit_id || '';
 
       console.log('Stream route response:', streamData);
 
@@ -776,9 +821,12 @@ class StreamPlayer {
             const byteInfo = kbReceived > 0 ? ` (${kbReceived} KB rx)` : '';
 
             if (this.techProto) {
-              this.techProto.textContent = isAltRtsp
+              const torSuffix = this.currentFeedTorRouted
+                ? ` [TOR ${this.currentFeedTorCircuit || ''}]`.trimEnd()
+                : '';
+              this.techProto.textContent = (isAltRtsp
                 ? `Alt RTSP 8554 Verified: ${codecInfo}${resInfo}${byteInfo}`
-                : `MediaMTX WebRTC Verified: ${codecInfo}${resInfo}${byteInfo}`;
+                : `MediaMTX WebRTC Verified: ${codecInfo}${resInfo}${byteInfo}`) + torSuffix;
             }
             return;
           }

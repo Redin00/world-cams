@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/css/styles.css?v=8700">
+  <link rel="stylesheet" href="/css/styles.css?v=8800">
 
   <!-- Scripts -->
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -63,6 +63,10 @@
       <div class="metric-card" id="metric-admin" style="cursor: pointer;" title="Administrator Access Status (Click to manage)">
         <span class="metric-label">ADMIN PRIVILEGES</span>
         <span class="metric-badge" id="stat-admin" style="color: var(--accent-rose); font-weight: 700;"><i data-lucide="lock" style="width: 11px; height: 11px; vertical-align: middle;"></i> LOCKED</span>
+      </div>
+      <div class="metric-card" id="metric-tor" style="cursor: pointer;" title="Tor Anonymizer Proxy (Disabled by default — click to toggle)">
+        <span class="metric-label">TOR PRIVACY PROXY</span>
+        <span class="metric-badge" id="stat-tor" style="color: var(--text-muted); font-weight: 700;"><i data-lucide="shield-off" style="width: 11px; height: 11px; vertical-align: middle;"></i> OFF (DIRECT)</span>
       </div>
     </div>
 
@@ -242,6 +246,12 @@
               <h3 id="player-feed-title">Select a camera to view</h3>
             </div>
             <div class="player-controls-right">
+              <button class="btn-icon" id="btn-player-tor-toggle" title="Toggle Tor Anonymizer Proxy (Off by default)">
+                <i data-lucide="shield-off"></i>
+              </button>
+              <button class="btn-icon" id="btn-player-tor-rotate" title="Rotate Tor Exit Circuit (New IP)" style="display: none;">
+                <i data-lucide="refresh-cw"></i>
+              </button>
               <button class="btn-icon text-accent" id="btn-player-random-cam" title="Jump to next random camera">
                 <i data-lucide="shuffle"></i>
               </button>
@@ -540,6 +550,45 @@
           <small class="form-hint">Required for administrative privileges, such as permanently deleting camera feeds, updating API keys, and camera discovery.</small>
         </div>
 
+        <div class="tor-settings-box" id="settings-tor-section">
+          <div class="tor-settings-header">
+            <label><i data-lucide="shield" style="width: 14px; height: 14px; color: #c084fc;"></i> Tor Anonymizer &amp; Circuit Rotation (Opt-in)</label>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-modal-tor-rotate" title="Request new Tor exit circuit (NEWNYM)">
+              <i data-lucide="refresh-cw" style="width: 12px; height: 12px;"></i> Rotate Exit
+            </button>
+          </div>
+          <div class="tor-toggle-row">
+            <label class="tor-checkbox-label" for="setting-tor-enabled">
+              <input type="checkbox" id="setting-tor-enabled">
+              Enable Tor SOCKS5 Proxy (Disabled by default, Fail-Closed)
+            </label>
+            <label class="tor-checkbox-label" for="setting-tor-autorotate">
+              <input type="checkbox" id="setting-tor-autorotate" checked>
+              Auto-rotate circuit per camera stream
+            </label>
+          </div>
+          <div class="tor-grid">
+            <div>
+              <label for="setting-tor-host">SOCKS5 Host</label>
+              <input type="text" id="setting-tor-host" class="form-control font-mono" value="127.0.0.1" placeholder="127.0.0.1">
+            </div>
+            <div>
+              <label for="setting-tor-port">SOCKS5 Port</label>
+              <input type="number" id="setting-tor-port" class="form-control font-mono" value="9050" min="1" max="65535">
+            </div>
+            <div>
+              <label for="setting-tor-ctrl-port">ControlPort</label>
+              <input type="number" id="setting-tor-ctrl-port" class="form-control font-mono" value="9051" min="1" max="65535">
+            </div>
+          </div>
+          <div class="tor-status-strip">
+            <span>Daemon: <strong id="tor-status-summary">OFF (DIRECT)</strong></span>
+            <span>Circuit: <code id="tor-circuit-label">none</code></span>
+            <span>Exit IP: <code id="tor-exit-ip-label">-</code></span>
+          </div>
+          <small class="form-hint" style="display: block; margin-top: 0.45rem;">Requires a local Tor SOCKS5 daemon (port 9050) or Tor Browser (port 9150). If enabled while unreachable, connections fail closed (HTTP 503) to prevent IP leaks.</small>
+        </div>
+
         <div class="form-group" style="margin-top: 1.5rem;">
           <label>MediaMTX Transcoding Endpoints</label>
           <div class="endpoint-item">
@@ -560,7 +609,7 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" data-modal="modal-settings">Cancel</button>
         <button class="btn btn-primary" id="btn-save-settings">
-          <i data-lucide="save"></i> Save Key
+          <i data-lucide="save"></i> Save Settings
         </button>
       </div>
     </div>
@@ -590,9 +639,9 @@
   </nav>
 
   <!-- Application Logic Modules (Cache-busting version) -->
-  <script src="/js/player.js?v=8700"></script>
-  <script src="/js/map.js?v=8700"></script>
-  <script src="/js/education.js?v=8700"></script>
-  <script src="/js/app.js?v=8700"></script>
+  <script src="/js/player.js?v=8800"></script>
+  <script src="/js/map.js?v=8800"></script>
+  <script src="/js/education.js?v=8800"></script>
+  <script src="/js/app.js?v=8800"></script>
 </body>
 </html>

@@ -6,9 +6,12 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse, quote
 
 import httpx
+from fastapi import HTTPException
 from backend.config import settings
+from backend.services.tor_service import tor_service
 
 logger = logging.getLogger("worldcams.mediamtx")
 
@@ -108,8 +111,13 @@ class MediaMTXService:
 
         # Check if the URL is a demo/simulated feed or real stream
         is_demo_stream = any(k in rtsp_url.lower() for k in ["rtsp.stream", "pattern", "demo", "simulated", "198.51.100", "203.0.113", "192.0.2"])
+        parsed_src = urlparse(rtsp_url)
+        cam_ip = parsed_src.hostname or ""
+        cam_port = parsed_src.port or (322 if parsed_src.scheme == "rtsps" else 554)
+        tor_routed = False
 
         if is_demo_stream:
+            await tor_service.stop_rtsp_bridge(clean_path)
             # Generate realistic on-demand CCTV video feed with camera OSD overlay
             label = clean_path.replace("_", "-").upper()
             ffmpeg_cmd = (
@@ -124,8 +132,25 @@ class MediaMTXService:
                 "runOnDemandStartTimeout": "10s"
             }
         else:
+            effective_source = rtsp_url
+            if cam_ip and tor_service.should_route_via_tor(cam_ip):
+                await tor_service._require_socks_ready()
+                bridge_port = await tor_service.ensure_rtsp_bridge(
+                    clean_path, cam_ip, cam_port, circuit_key=clean_path
+                )
+                auth_prefix = ""
+                if parsed_src.username is not None:
+                    u_q = quote(parsed_src.username, safe="")
+                    p_q = quote(parsed_src.password or "", safe="")
+                    auth_prefix = f"{u_q}:{p_q}@" if parsed_src.password is not None else f"{u_q}@"
+                path_and_query = (parsed_src.path or "/") + (f"?{parsed_src.query}" if parsed_src.query else "")
+                effective_source = f"rtsp://{auth_prefix}127.0.0.1:{bridge_port}{path_and_query}"
+                tor_routed = True
+            else:
+                await tor_service.stop_rtsp_bridge(clean_path)
+
             payload = {
-                "source": rtsp_url,
+                "source": effective_source,
                 "sourceOnDemand": False,
                 "rtspTransport": "tcp"
             }
@@ -156,7 +181,9 @@ class MediaMTXService:
                     "hls_manifest_url": f"{self.hls_url}/{clean_path}/index.m3u8",
                     "status": status,
                     "is_simulated": is_demo_stream,
-                    "message": "Stream pipeline ready in MediaMTX"
+                    "tor_routed": tor_routed,
+                    "tor_circuit_id": tor_service.current_circuit_id if tor_routed else None,
+                    "message": "Stream pipeline ready via Tor SOCKS5 Bridge" if tor_routed else "Stream pipeline ready in MediaMTX"
                 }
             except Exception as e:
                 logger.warning(f"MediaMTX API communication notice ({e}). Route generated.")
@@ -169,6 +196,8 @@ class MediaMTXService:
                     "hls_manifest_url": f"{self.hls_url}/{clean_path}/index.m3u8",
                     "status": "ready",
                     "is_simulated": is_demo_stream,
+                    "tor_routed": tor_routed,
+                    "tor_circuit_id": tor_service.current_circuit_id if tor_routed else None,
                     "message": "MediaMTX route configured."
                 }
 
@@ -229,13 +258,40 @@ class MediaMTXService:
         }
 
     async def stop_stream(self, clean_path: str) -> bool:
-        """Stops pulling a remote camera stream and cleans up its MediaMTX path."""
+        """Stops pulling a remote camera stream and cleans up its MediaMTX path and Tor RTSP bridge."""
         clean = re.sub(r"[^a-zA-Z0-9_-]", "_", clean_path).strip("_")
+        await tor_service.stop_rtsp_bridge(clean)
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 res = await client.delete(f"{self.api_url}/v3/config/paths/delete/{clean}")
                 return res.status_code in (200, 204)
         except Exception:
             return False
+
+    async def stop_all_streams(self) -> None:
+        """Stop all currently registered MediaMTX streams and release Tor RTSP bridges."""
+        await tor_service.stop_all_bridges()
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                names = set()
+                for endpoint in ("/v3/paths/list", "/v3/config/paths/list"):
+                    try:
+                        res = await client.get(f"{self.api_url}{endpoint}")
+                        if res.status_code == 200:
+                            for item in res.json().get("items", []):
+                                name = item.get("name")
+                                if name:
+                                    names.add(name)
+                    except Exception:
+                        pass
+                for name in names:
+                    clean = re.sub(r"[^a-zA-Z0-9_-]", "_", name).strip("_")
+                    if clean:
+                        try:
+                            await client.delete(f"{self.api_url}/v3/config/paths/delete/{clean}")
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
 mediamtx_service = MediaMTXService()

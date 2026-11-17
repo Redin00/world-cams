@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     SAMPLE_DATA_PATH: str = str(BASE_DIR / "data" / "sample_feeds.json")
     STATIC_DIR: str = str(BASE_DIR / "frontend")
 
+    # Tor Anonymizer Proxy Settings (Disabled by default; selectable at runtime)
+    TOR_ENABLED: bool = False
+    TOR_AUTO_ROTATE: bool = True
+    TOR_SOCKS_HOST: str = "127.0.0.1"
+    TOR_SOCKS_PORT: int = 9050
+    TOR_CONTROL_PORT: int = 9051
+    TOR_CONTROL_PASSWORD: Optional[str] = None
+
 settings = Settings()
 
 import ssl

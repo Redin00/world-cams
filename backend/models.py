@@ -83,6 +83,8 @@ class StreamResponse(BaseModel):
     message: Optional[str] = None
     stream_type: Optional[str] = None
     web_url: Optional[str] = None
+    tor_routed: bool = False
+    tor_circuit_id: Optional[str] = None
 
 class ResolveRtspRequest(BaseModel):
     feed_id: Optional[str] = None
@@ -143,3 +145,30 @@ class EducationArticle(BaseModel):
     summary: str
     content: str
     checklists: List[ChecklistItem] = Field(default_factory=list)
+
+
+class TorConfigRequest(BaseModel):
+    enabled: bool
+    auto_rotate: Optional[bool] = True
+    socks_host: Optional[str] = None
+    socks_port: Optional[int] = None
+    control_port: Optional[int] = None
+    control_password: Optional[str] = None
+
+
+class TorStatusResponse(BaseModel):
+    enabled: bool
+    auto_rotate: bool
+    socks_host: str
+    socks_port: int
+    control_port: int
+    socks_alive: bool
+    tor_binary_installed: bool
+    circuit_generation: int
+    circuit_id: str
+    last_rotated_at: Optional[str] = None
+    exit_ip: Optional[str] = None
+    exit_country: Optional[str] = None
+    exit_isp: Optional[str] = None
+    active_bridges: int = 0
+    message: Optional[str] = None

@@ -155,6 +155,34 @@ body.dark-theme {
   color: var(--accent-rose);
 }
 
+.metric-card.tor-on {
+  border-color: rgba(168, 85, 247, 0.55);
+  background: rgba(168, 85, 247, 0.14);
+}
+
+.metric-card.tor-error {
+  border-color: rgba(244, 63, 94, 0.5);
+  background: rgba(244, 63, 94, 0.12);
+}
+
+.btn-icon.tor-active {
+  color: #c084fc;
+  background: rgba(168, 85, 247, 0.18);
+  border-color: rgba(168, 85, 247, 0.55);
+}
+
+.btn-icon.tor-active:hover {
+  color: #f3e8ff;
+  background: rgba(168, 85, 247, 0.3);
+  border-color: #a855f7;
+}
+
+.btn-icon.tor-error {
+  color: var(--accent-rose);
+  background: rgba(244, 63, 94, 0.15);
+  border-color: rgba(244, 63, 94, 0.45);
+}
+
 .metric-label {
   font-size: 0.58rem;
   color: var(--text-faint);
@@ -2332,4 +2360,75 @@ body.dark-theme {
   .mobile-quick-cam-name {
     max-width: 140px;
   }
+}
+
+/* ==========================================================================
+   Tor Anonymizer & Circuit Rotation UI
+   ========================================================================== */
+.tor-settings-box {
+  margin-top: 1.25rem;
+  padding: 0.9rem 1rem;
+  background: rgba(168, 85, 247, 0.06);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+  border-radius: var(--radius-sm);
+}
+
+.tor-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+}
+
+.tor-settings-header label {
+  margin: 0;
+  color: #e9d5ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.tor-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.tor-checkbox-label {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  color: var(--text-main) !important;
+  font-size: 0.76rem !important;
+  margin-bottom: 0 !important;
+}
+
+.tor-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr 0.8fr;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.tor-status-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.65rem;
+}
+
+.tor-status-strip code {
+  color: #c084fc;
 }

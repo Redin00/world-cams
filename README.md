@@ -74,11 +74,11 @@ Click the **🔍 Shodan Search** button in the top navigation bar. Two reconnais
 - **Free Web Scraper (Zero API Credits)**: Scrapes publicly accessible live listings and enriches them with GeoIP data without consuming Shodan query credits.
 - **Limit Selector**: Choose how many cameras to fetch (up to 8,000+ per batch).
 
-### 2. View Live Video & Web Consoles
-Click any camera card or map pin to load it into the central player:
-- **RTSP Streams (`port 554`, `8554`)**: Automatically bridged to browser-native **WebRTC (WHEP)** for sub-second streaming with live telemetry.
-- **HTTP / MJPEG Streams (`port 80`, `8080`, `8000`, `8050`)**: Proxied directly through the backend to eliminate browser mixed-content and CORS blocks.
-- **Web Consoles (`port 443`, `80`)**: Embedded directly inside the player with security headers (CSP/X-Frame-Options) stripped for interactive web viewing.
+### 2. View Live Video & Isolated Web Portals
+Click any camera card or map pin (or press the **Shuffle / Random Camera** button) to load it into the central player:
+- **RTSP Streams (`port 554`, `8554`)**: Automatically bridged to browser-native **WebRTC (WHEP)** via MediaMTX for sub-second streaming with live telemetry.
+- **HTTP / MJPEG Streams (`port 80–99` including `81`, `82`, `83`, `8000–8499`, `8800–8899`, `443`)**: Proxied exclusively through the backend (`/api/proxy/stream`) so the browser never connects directly to untrusted camera IPs, eliminating mixed-content and CORS issues.
+- **Anti-Honeypot Isolated Web Portals**: Web management portals are fetched server-side by `/api/proxy/web`, statically parsed to extract embedded MJPEG/JPEG stream URLs, and rendered as sanitized read-only source code with **all remote JavaScript, iframes, and objects stripped and blocked** (`script-src 'none'; object-src 'none'; sandbox`). Binary payloads disguised as images (e.g. `MZ` executables or HTML/XSS) are rejected with HTTP `415`.
 
 ### 3. Automatic SSL Error Bypass (Port 443)
 Many surveillance cameras run outdated firmware that causes modern browsers to fail with SSL errors:
@@ -101,6 +101,29 @@ When an RTSP stream fails to negotiate:
 - Enter the admin token in **⚙️ Settings** to unlock feed deletion:
   - Delete individual cameras directly from the player toolbar.
   - Enable **Select Cards** on the feed browser to batch-delete multiple feeds in one click.
+
+### 7. Tor Anonymizer Proxy & Circuit Rotation (Opt-In)
+WorldCams supports optional routing and automatic exit-circuit rotation over **Tor SOCKS5** (`disabled by default` — starts in `OFF (DIRECT)` mode):
+- **Toggle Anywhere**: Click **`TOR PRIVACY PROXY`** in the top navbar, the shield button in the player controls, or configure it in **⚙️ Settings**.
+- **Full Backend Coverage**: When enabled, HTTP/HTTPS camera proxies (`/api/proxy/stream`, `/api/proxy/web`), RTSP probing & MediaMTX RTSP pulls (via an internal local **TCP-to-SOCKS5 bridge**), and Shodan/Insecam/GeoIP lookups all route through Tor.
+- **Circuit Rotation (`IsolateSocksAuth` + `NEWNYM`)**: Automatically rotates SOCKS5 stream-isolation credentials (`wc_<gen>_<key>`) per camera stream (`TOR_AUTO_ROTATE=true`) or on manual **Rotate Exit** (`POST /api/tor/rotate`), and sends `SIGNAL NEWNYM` to Tor `ControlPort` when available.
+- **Fail-Closed Privacy Guarantee**: If Tor is enabled while the SOCKS5 listener is unreachable, all proxied camera & recon requests fail closed with **HTTP `503`** — never falling back to a direct connection.
+- **WebRTC STUN Leak Prevention**: [mediamtx.yml](mediamtx.yml) sets `webrtcICEServers2: []` (no external STUN servers), so WebRTC runs strictly locally between your browser and MediaMTX (`localhost`). Toggling Tor or rotating circuits automatically tears down active MediaMTX streams and RTSP bridges.
+
+**Local Tor Setup:**
+```bash
+# Arch Linux
+sudo pacman -S tor && sudo systemctl enable --now tor
+
+# Ubuntu / Debian
+sudo apt install tor && sudo systemctl enable --now tor
+```
+*(Tor Browser's SOCKS5 listener on port `9150` is also auto-detected when port `9050` is closed.)*
+
+### 8. Security Hardening & WAF
+- **WAF Middleware**: Blocks Path Traversal (`/../etc/passwd`, `/.env`, `/.git`), SQL Injection, XSS, Command Injection, and automated scanner User-Agents (`sqlmap`, etc.) with HTTP `403`.
+- **Multi-Layered CSRF Protection**: Validates `Origin`/`Referer` hosts, `Sec-Fetch-Site` Fetch Metadata, blocks HTML `<form>` Content-Types on JSON APIs, and enforces HMAC-signed Double-Submit tokens (`worldcams_csrf` cookie + `X-CSRF-Token` header) with automatic cookie self-healing.
+- **SSRF Protection**: Blocks cloud metadata (`169.254.169.254`), DNS hostnames/rebinding, restricted internal ports (SSH, MediaMTX Control API), and cross-host redirects.
 
 ---
 
@@ -129,7 +152,20 @@ MEDIAMTX_RTSP_PORT=8554
 MEDIAMTX_API_URL=http://localhost:9997
 MEDIAMTX_WHEP_URL=http://localhost:8889
 MEDIAMTX_HLS_URL=http://localhost:8888
+
+# Optional Tor Anonymizer Proxy (disabled by default; opt-in via UI or .env)
+TOR_ENABLED=false
+TOR_AUTO_ROTATE=true
+TOR_SOCKS_HOST=127.0.0.1
+TOR_SOCKS_PORT=9050
+TOR_CONTROL_PORT=9051
+TOR_CONTROL_PASSWORD=
 ```
+
+### Tor Control API Endpoints
+- `GET /api/tor/status?verify_ip=false` — Current Tor proxy state, SOCKS5 reachability, circuit ID, and optional exit IP check.
+- `POST /api/tor/config` — Enable/disable Tor mode or update `socks_host`, `socks_port`, `control_port`, and `auto_rotate`.
+- `POST /api/tor/rotate?verify_ip=false` — Rotate circuit credentials (`IsolateSocksAuth` + `SIGNAL NEWNYM`) and close stale RTSP bridges.
 
 ---
 

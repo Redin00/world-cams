@@ -22,7 +22,8 @@ from backend.models import (
     StreamStartRequest, StreamResponse, ResolveRtspRequest, ResolveRtspResponse,
     RetryCredentialsRequest, RetryCredentialsResponse,
     ShodanSearchQuery, ShodanKeyRequest,
-    EducationArticle
+    EducationArticle,
+    TorConfigRequest, TorStatusResponse
 )
 from backend.security import (
     SecurityWAFMiddleware,
@@ -44,6 +45,7 @@ from backend.services.mediamtx_service import mediamtx_service
 from backend.services.shodan_service import shodan_service
 from backend.services.education_service import get_education_articles, get_checklist_items
 from backend.services.rtsp_resolver import rtsp_resolver
+from backend.services.tor_service import tor_service
 
 # Configure logging
 logging.basicConfig(
@@ -64,7 +66,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown: clean up background processes
-    logger.info("Shutting down MediaMTX...")
+    logger.info("Shutting down Tor bridges & MediaMTX...")
+    await tor_service.shutdown()
     mediamtx_service.stop()
 
 app = FastAPI(
@@ -425,6 +428,21 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         rtsp_url = feed.rtsp_url
         stream_path = feed.stream_path
 
+    target_for_tor = (feed.ip if feed else None) or rtsp_url or ""
+    if tor_service.should_route_via_tor(target_for_tor):
+        if not await tor_service.check_socks_alive():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Tor proxy is enabled (fail-closed) but SOCKS5 at "
+                    f"{tor_service.socks_host}:{tor_service.socks_port} is unreachable."
+                ),
+            )
+        if tor_service.auto_rotate:
+            await tor_service.rotate_circuit(reason=f"stream_{req.feed_id or 'play'}", verify_ip=False)
+
+    if feed:
+
         # ---------------------------------------------------------------------
         # Case A: Camera on Web Port (80-99 including 81, 82, 83..., 443, 8000-8499, etc.) or HTTP/HTTPS URL
         # ---------------------------------------------------------------------
@@ -471,6 +489,8 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                             status="http_stream",
                             stream_type=stype,
                             web_url=f"{scheme}://{feed.ip}:{feed.port}/",
+                            tor_routed=tor_service.enabled,
+                            tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
                             message=resolve_res.get("message", f"{scheme.upper()} Live Stream active")
                         )
                     elif stype == "web_ui":
@@ -484,6 +504,8 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                             status="web_ui",
                             stream_type="web_ui",
                             web_url=f"{scheme}://{feed.ip}:{feed.port}/",
+                            tor_routed=tor_service.enabled,
+                            tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
                             message=resolve_res.get("message", "Isolated Camera Web Portal (Code Execution Blocked)")
                         )
 
@@ -499,8 +521,14 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                 for s in schemes_to_try:
                     verify_arg = get_legacy_ssl_context() if s == "https" else False
                     try:
-                        async with httpx.AsyncClient(timeout=2.0, verify=verify_arg, follow_redirects=False) as client:
-                            portal_root = f"{s}://{feed.ip}:{feed.port}/"
+                        portal_root = f"{s}://{feed.ip}:{feed.port}/"
+                        async with await tor_service.create_http_client(
+                            portal_root,
+                            verify=verify_arg,
+                            timeout=2.5,
+                            follow_redirects=False,
+                            circuit_key=safe_feed_id,
+                        ) as client:
                             r_root = await client.get(portal_root)
                             if r_root.status_code in (200, 301, 302, 401):
                                 proto_note = "HTTPS" if s == "https" else "Plaintext HTTP"
@@ -527,6 +555,8 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                                                 status="http_stream",
                                                 stream_type=stype_c,
                                                 web_url=portal_root,
+                                                tor_routed=tor_service.enabled,
+                                                tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
                                                 message=f"Extracted {stype_c.upper()} stream from isolated web portal ({proto_note})"
                                             )
                                 return StreamResponse(
@@ -539,8 +569,12 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                                     status="web_ui",
                                     stream_type="web_ui",
                                     web_url=portal_root,
+                                    tor_routed=tor_service.enabled,
+                                    tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
                                     message=f"Isolated Camera Web Portal on port {feed.port} ({proto_note}) — Code Execution Blocked"
                                 )
+                    except HTTPException:
+                        raise
                     except Exception as e:
                         err_str = str(e).lower()
                         if s == "https" and any(k in err_str for k in ["ssl", "record", "version", "handshake", "connect"]):
@@ -557,6 +591,8 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     status="offline",
                     stream_type="offline",
                     web_url=f"{scheme}://{feed.ip}:{feed.port}/",
+                    tor_routed=tor_service.enabled,
+                    tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
                     message=f"Port {feed.port} unreachable or camera offline"
                 )
 
@@ -571,6 +607,8 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                 status="http_stream",
                 stream_type=inferred_type,
                 web_url=f"{scheme}://{feed.ip}:{feed.port}/",
+                tor_routed=tor_service.enabled,
+                tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
                 message=f"{scheme.upper()} Live Stream / Snapshot endpoint ready"
             )
 
@@ -633,6 +671,8 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                         hls_url="",
                         hls_manifest_url="",
                         status="http_stream",
+                        tor_routed=tor_service.enabled,
+                        tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
                         message=resolve_res.get("message", "HTTP Stream resolved")
                     )
 
@@ -658,6 +698,8 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                         .replace("http://127.0.0.1:", f"http://{client_host}:")
                     )
 
+    route_info["tor_routed"] = tor_service.enabled
+    route_info["tor_circuit_id"] = tor_service.current_circuit_id if tor_service.enabled else None
     return StreamResponse(**route_info)
 
 
@@ -728,9 +770,15 @@ async def proxy_camera_stream(
         candidates.append(target_url.replace("https://", "http://", 1))
 
     async def _open_safe_camera_stream(cand_url: str):
-        """Connect to camera URL with same-IP redirect validation (max 2 hops)."""
+        """Connect to camera URL with same-IP redirect validation (max 2 hops) and optional Tor routing."""
         verify_arg = get_legacy_ssl_context() if cand_url.startswith("https://") else False
-        client_inst = httpx.AsyncClient(verify=verify_arg, timeout=10.0, follow_redirects=False)
+        client_inst = await tor_service.create_http_client(
+            cand_url,
+            verify=verify_arg,
+            timeout=10.0,
+            follow_redirects=False,
+            circuit_key=feed_id or cand_url,
+        )
         curr_url = cand_url
         orig_host = (urlparse(cand_url).hostname or "").lower()
         try:
@@ -901,6 +949,8 @@ async def proxy_camera_stream(
             "X-Content-Type-Options": "nosniff",
             "X-Frame-Options": "DENY",
             "X-Extracted-Stream-Source": target_url,
+            "X-Tor-Routed": "true" if tor_service.enabled else "false",
+            "X-Tor-Circuit": tor_service.current_circuit_id if tor_service.enabled else "direct",
             "Content-Disposition": 'inline; filename="camera_stream.jpg"',
             "Content-Security-Policy": (
                 "default-src 'none'; img-src 'self' data:; media-src 'self'; "
@@ -984,7 +1034,13 @@ async def proxy_web_console(
         verify_arg = get_legacy_ssl_context() if cand.startswith("https://") else False
         orig_host = (urlparse(cand).hostname or "").lower()
         try:
-            async with httpx.AsyncClient(verify=verify_arg, timeout=6.0, follow_redirects=False) as client:
+            async with await tor_service.create_http_client(
+                cand,
+                verify=verify_arg,
+                timeout=6.0,
+                follow_redirects=False,
+                circuit_key=feed_id or cand,
+            ) as client:
                 curr = cand
                 for _ in range(3):
                     async with client.stream("GET", curr) as r:
@@ -1009,6 +1065,8 @@ async def proxy_web_console(
                         break
                 if resp_status > 0:
                     break
+        except HTTPException:
+            raise
         except Exception as e:
             last_err = e
             err_msg = str(e).lower()
@@ -1022,6 +1080,8 @@ async def proxy_web_console(
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "SAMEORIGIN",
         "Referrer-Policy": "no-referrer",
+        "X-Tor-Routed": "true" if tor_service.enabled else "false",
+        "X-Tor-Circuit": tor_service.current_circuit_id if tor_service.enabled else "direct",
         "Content-Security-Policy": (
             "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; "
             "script-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; sandbox"
@@ -1091,6 +1151,8 @@ async def proxy_web_console(
                 "isolated": True,
                 "code_execution_blocked": True,
                 "reachable": True,
+                "tor_routed": tor_service.enabled,
+                "tor_circuit_id": tor_service.current_circuit_id if tor_service.enabled else None,
                 "target_url": effective_url,
                 "status_code": resp_status,
                 "portal_title": extracted["portal_title"],
@@ -1443,17 +1505,54 @@ async def get_checklist():
     return get_checklist_items()
 
 # ==========================================
+# Tor Anonymizer & Circuit Rotation Routes
+# ==========================================
+
+@app.get("/api/tor/status", response_model=TorStatusResponse)
+async def get_tor_status(verify_ip: bool = Query(False)):
+    """Return current Tor SOCKS5 proxy status, circuit generation, and optional exit IP check."""
+    return await tor_service.get_status(verify_ip=verify_ip)
+
+
+@app.post("/api/tor/config", response_model=TorStatusResponse)
+async def update_tor_config(req: TorConfigRequest):
+    """Enable/disable Tor proxy routing (off by default) or update SOCKS5/ControlPort settings."""
+    try:
+        return await tor_service.update_config(
+            enabled=req.enabled,
+            auto_rotate=req.auto_rotate,
+            socks_host=req.socks_host,
+            socks_port=req.socks_port,
+            control_port=req.control_port,
+            control_password=req.control_password,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+
+@app.post("/api/tor/rotate", response_model=TorStatusResponse)
+async def rotate_tor_circuit(verify_ip: bool = Query(False)):
+    """Rotate the active Tor exit circuit (NEWNYM + fresh IsolateSocksAuth credentials)."""
+    await tor_service.rotate_circuit(reason="manual_api", verify_ip=verify_ip)
+    return await tor_service.get_status(verify_ip=verify_ip)
+
+
+# ==========================================
 # Health Check
 # ==========================================
 
 @app.get("/api/health")
 async def health_check():
     mtx_alive = await mediamtx_service.is_running()
+    tor_alive = await tor_service.check_socks_alive()
     return {
         "status": "healthy",
         "backend": "online",
         "mediamtx_alive": mtx_alive,
-        "shodan_configured": bool(shodan_service.api_key)
+        "shodan_configured": bool(shodan_service.api_key),
+        "tor_enabled": tor_service.enabled,
+        "tor_socks_alive": tor_alive,
+        "tor_circuit_id": tor_service.current_circuit_id if tor_service.enabled else None,
     }
 
 # ==========================================

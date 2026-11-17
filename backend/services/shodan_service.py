@@ -8,9 +8,11 @@ import urllib.parse
 from typing import Optional, Dict, Any, List
 import httpx
 from bs4 import BeautifulSoup
+from fastapi import HTTPException
 
 from backend.config import settings
 from backend.security import is_https_camera_port, is_web_camera_port
+from backend.services.tor_service import tor_service
 
 logger = logging.getLogger("worldcams.recon")
 
@@ -56,7 +58,7 @@ class CameraReconService:
 
         try:
             await self._wait_for_rate_limit()
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with await tor_service.create_http_client(self.base_url, verify=True, timeout=8.0) as client:
                 res = await client.get(f"{self.base_url}/api-info", params={"key": self.api_key})
                 if res.status_code == 200:
                     return {
@@ -71,6 +73,13 @@ class CameraReconService:
                         "error": f"HTTP {res.status_code}",
                         "message": "Invalid or expired API key."
                     }
+        except HTTPException as he:
+            return {
+                "active": False,
+                "configured": True,
+                "error": f"HTTP {he.status_code}",
+                "message": he.detail
+            }
         except Exception as e:
             return {
                 "active": False,
@@ -225,7 +234,9 @@ class CameraReconService:
 
         results = []
         try:
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            async with await tor_service.create_http_client(
+                url, verify=True, timeout=10.0, follow_redirects=True
+            ) as client:
                 res = await client.get(url, headers=self.headers)
                 if res.status_code == 200:
                     soup = BeautifulSoup(res.text, "html.parser")
@@ -257,6 +268,8 @@ class CameraReconService:
                             })
                             if len(results) >= limit:
                                 break
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(f"Insecam scraper notice: {e}")
 
@@ -272,7 +285,9 @@ class CameraReconService:
         results = []
         try:
             await self._wait_for_rate_limit()
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            async with await tor_service.create_http_client(
+                url, verify=True, timeout=10.0, follow_redirects=True
+            ) as client:
                 res = await client.get(url, headers=headers)
                 if res.status_code == 200 and "/limit" not in str(res.url):
                     soup = BeautifulSoup(res.text, "html.parser")
@@ -299,6 +314,8 @@ class CameraReconService:
                                 })
                                 if len(results) >= limit:
                                     break
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(f"Shodan web facet scraper notice: {e}")
 
@@ -310,12 +327,16 @@ class CameraReconService:
             return {}
         geo_map = {}
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with await tor_service.create_http_client(
+                "http://ip-api.com/batch", verify=True, timeout=8.0
+            ) as client:
                 res = await client.post("http://ip-api.com/batch", json=ips[:100])
                 if res.status_code == 200:
                     for entry in res.json():
                         if entry.get("status") == "success":
                             geo_map[entry.get("query")] = entry
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning(f"Batch GeoIP lookup notice: {e}")
         return geo_map
@@ -339,8 +360,7 @@ class CameraReconService:
         max_pages = (target_limit + 99) // 100
 
         try:
-            timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=30.0)
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with await tor_service.create_http_client(self.base_url, verify=True, timeout=30.0) as client:
                 url = f"{self.base_url}/shodan/host/search"
 
                 while page <= max_pages:
@@ -403,6 +423,8 @@ class CameraReconService:
                     "facets": facets,
                     "message": f"Retrieved {len(parsed)} feeds via Shodan API (total matches in Shodan: {total_available})."
                 }
+        except HTTPException:
+            raise
         except Exception as e:
             if all_matches:
                 parsed = [self._parse_shodan_match(m) for m in all_matches[:target_limit]]

@@ -58,6 +58,20 @@ class AppController {
     this.statShodan = document.getElementById('stat-shodan');
     this.statAdmin = document.getElementById('stat-admin');
     this.metricAdmin = document.getElementById('metric-admin');
+    this.statTor = document.getElementById('stat-tor');
+    this.metricTor = document.getElementById('metric-tor');
+    this.btnPlayerTorToggle = document.getElementById('btn-player-tor-toggle');
+    this.btnPlayerTorRotate = document.getElementById('btn-player-tor-rotate');
+    this.btnModalTorRotate = document.getElementById('btn-modal-tor-rotate');
+    this.torStatus = {
+      enabled: false,
+      auto_rotate: true,
+      socks_host: '127.0.0.1',
+      socks_port: 9050,
+      control_port: 9051,
+      socks_alive: false,
+      circuit_id: 'direct'
+    };
 
     // Batch Management elements
     this.batchSelectAll = document.getElementById('batch-select-all');
@@ -204,6 +218,20 @@ class AppController {
       this.promptAdminAuth();
     });
 
+    // Tor Anonymizer Toggle & Circuit Rotation
+    this.metricTor?.addEventListener('click', () => {
+      this.toggleTorProxy();
+    });
+    this.btnPlayerTorToggle?.addEventListener('click', () => {
+      this.toggleTorProxy();
+    });
+    this.btnPlayerTorRotate?.addEventListener('click', () => {
+      this.rotateTorCircuit();
+    });
+    this.btnModalTorRotate?.addEventListener('click', () => {
+      this.rotateTorCircuit();
+    });
+
     // Close buttons for modals
     document.querySelectorAll('[data-modal]').forEach(el => {
       el.addEventListener('click', () => {
@@ -326,6 +354,7 @@ class AppController {
     } catch (_) {}
     await this.checkAdminStatus();
     await this.checkHealth();
+    await this.loadTorStatus();
     await this.loadFacets();
     await this.loadFeeds();
     lucide.createIcons();
@@ -514,9 +543,131 @@ class AppController {
           this.statShodan.textContent = 'SCRAPER (0 CREDITS)';
           this.statShodan.style.color = 'var(--accent-cyan)';
         }
+
+        if (typeof data.tor_enabled === 'boolean') {
+          this.updateTorUI({
+            ...this.torStatus,
+            enabled: data.tor_enabled,
+            socks_alive: Boolean(data.tor_socks_alive),
+            circuit_id: data.tor_circuit_id || (data.tor_enabled ? this.torStatus.circuit_id : 'direct')
+          });
+        }
       }
     } catch (e) {
       this.statMtx.textContent = 'OFFLINE';
+    }
+  }
+
+  updateTorUI(status) {
+    if (!status) return;
+    this.torStatus = { ...this.torStatus, ...status };
+    const esc = window.escapeHtml || (s => String(s ?? ''));
+    const enabled = Boolean(this.torStatus.enabled);
+    const alive = Boolean(this.torStatus.socks_alive);
+    const circuit = this.torStatus.circuit_id || (enabled ? 'init' : 'direct');
+
+    if (this.metricTor && this.statTor) {
+      this.metricTor.classList.toggle('tor-on', enabled && alive);
+      this.metricTor.classList.toggle('tor-error', enabled && !alive);
+      if (enabled && alive) {
+        this.statTor.innerHTML = `<i data-lucide="shield-check" style="width: 11px; height: 11px; vertical-align: middle;"></i> ON // ${esc(circuit)}`;
+        this.statTor.style.color = '#c084fc';
+      } else if (enabled && !alive) {
+        this.statTor.innerHTML = '<i data-lucide="shield-alert" style="width: 11px; height: 11px; vertical-align: middle;"></i> ON // SOCKS5 OFFLINE';
+        this.statTor.style.color = 'var(--accent-rose)';
+      } else {
+        this.statTor.innerHTML = '<i data-lucide="shield-off" style="width: 11px; height: 11px; vertical-align: middle;"></i> OFF (DIRECT)';
+        this.statTor.style.color = 'var(--text-muted)';
+      }
+    }
+
+    if (this.btnPlayerTorToggle) {
+      this.btnPlayerTorToggle.classList.toggle('tor-active', enabled && alive);
+      this.btnPlayerTorToggle.classList.toggle('tor-error', enabled && !alive);
+      this.btnPlayerTorToggle.innerHTML = enabled
+        ? (alive ? '<i data-lucide="shield-check"></i>' : '<i data-lucide="shield-alert"></i>')
+        : '<i data-lucide="shield-off"></i>';
+      this.btnPlayerTorToggle.title = enabled
+        ? (alive ? `Tor Active (${circuit}) — Click to disable` : 'Tor Enabled but SOCKS5 Offline (Fail-Closed) — Click to disable')
+        : 'Tor Proxy OFF (Direct) — Click to enable';
+    }
+
+    if (this.btnPlayerTorRotate) {
+      this.btnPlayerTorRotate.style.display = enabled ? 'inline-flex' : 'none';
+    }
+
+    const summaryEl = document.getElementById('tor-status-summary');
+    const circuitEl = document.getElementById('tor-circuit-label');
+    const exitIpEl = document.getElementById('tor-exit-ip-label');
+    if (summaryEl) {
+      summaryEl.textContent = enabled
+        ? (alive ? 'ACTIVE (SOCKS5 ONLINE)' : 'ENABLED // SOCKS5 OFFLINE (FAIL-CLOSED)')
+        : 'OFF (DIRECT)';
+      summaryEl.style.color = enabled
+        ? (alive ? '#c084fc' : 'var(--accent-rose)')
+        : 'var(--text-muted)';
+    }
+    if (circuitEl) circuitEl.textContent = enabled ? circuit : 'none';
+    if (exitIpEl) exitIpEl.textContent = this.torStatus.exit_ip || '-';
+
+    if (window.lucide) {
+      lucide.createIcons();
+    }
+  }
+
+  async loadTorStatus(verifyIp = false) {
+    try {
+      const res = await fetch(`/api/tor/status?verify_ip=${verifyIp ? 'true' : 'false'}`);
+      if (res.ok) {
+        const st = await res.json();
+        this.updateTorUI(st);
+        return st;
+      }
+    } catch (e) {
+      console.warn('Tor status check failed:', e);
+    }
+    return null;
+  }
+
+  async toggleTorProxy() {
+    const targetEnabled = !(this.torStatus && this.torStatus.enabled);
+    try {
+      const res = await fetch('/api/tor/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: targetEnabled })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`Tor configuration error: ${err.detail || res.statusText}`);
+        return;
+      }
+      const st = await res.json();
+      this.updateTorUI(st);
+      if (this.selectedFeed && window.streamPlayer && (!st.enabled || st.socks_alive)) {
+        window.streamPlayer.playFeed(this.selectedFeed);
+      }
+    } catch (e) {
+      alert('Failed to toggle Tor proxy: ' + e.message);
+    }
+  }
+
+  async rotateTorCircuit() {
+    const btns = [this.btnPlayerTorRotate, this.btnModalTorRotate].filter(Boolean);
+    btns.forEach(b => { b.disabled = true; });
+    try {
+      const res = await fetch('/api/tor/rotate?verify_ip=true', { method: 'POST' });
+      if (res.ok) {
+        const st = await res.json();
+        this.updateTorUI(st);
+        if (this.selectedFeed && window.streamPlayer && (!st.enabled || st.socks_alive)) {
+          window.streamPlayer.playFeed(this.selectedFeed);
+        }
+      }
+    } catch (e) {
+      console.warn('Tor circuit rotation error:', e);
+    } finally {
+      btns.forEach(b => { b.disabled = false; });
     }
   }
 
@@ -1308,6 +1459,21 @@ class AppController {
       console.error(e);
     }
 
+    // Load Tor Proxy & Circuit Rotation state
+    const torSt = await this.loadTorStatus(false);
+    if (torSt) {
+      const torEnabledEl = document.getElementById('setting-tor-enabled');
+      const torAutoEl = document.getElementById('setting-tor-autorotate');
+      const torHostEl = document.getElementById('setting-tor-host');
+      const torPortEl = document.getElementById('setting-tor-port');
+      const torCtrlPortEl = document.getElementById('setting-tor-ctrl-port');
+      if (torEnabledEl) torEnabledEl.checked = Boolean(torSt.enabled);
+      if (torAutoEl) torAutoEl.checked = Boolean(torSt.auto_rotate);
+      if (torHostEl) torHostEl.value = torSt.socks_host || '127.0.0.1';
+      if (torPortEl) torPortEl.value = torSt.socks_port || 9050;
+      if (torCtrlPortEl) torCtrlPortEl.value = torSt.control_port || 9051;
+    }
+
     // Load and verify Admin Access Key
     const adminToken = this.getAdminToken();
     const adminInput = document.getElementById('setting-admin-token');
@@ -1373,6 +1539,30 @@ class AppController {
           return;
         }
       }
+
+      const torEnabledEl = document.getElementById('setting-tor-enabled');
+      if (torEnabledEl) {
+        const torPayload = {
+          enabled: torEnabledEl.checked,
+          auto_rotate: Boolean(document.getElementById('setting-tor-autorotate')?.checked),
+          socks_host: (document.getElementById('setting-tor-host')?.value || '127.0.0.1').trim() || '127.0.0.1',
+          socks_port: parseInt(document.getElementById('setting-tor-port')?.value || '9050', 10) || 9050,
+          control_port: parseInt(document.getElementById('setting-tor-ctrl-port')?.value || '9051', 10) || 9051
+        };
+        const torRes = await fetch('/api/tor/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(torPayload)
+        });
+        if (!torRes.ok) {
+          const torErr = await torRes.json().catch(() => ({}));
+          alert('Error saving Tor configuration: ' + (torErr.detail || torRes.statusText));
+          return;
+        }
+        const torSt = await torRes.json();
+        this.updateTorUI(torSt);
+      }
+
       await this.checkAdminStatus();
       await this.checkHealth();
       await this.loadSettings();

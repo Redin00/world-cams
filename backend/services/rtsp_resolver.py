@@ -6,6 +6,7 @@ import re
 from typing import Optional, List, Tuple, Dict, Any
 from urllib.parse import urlparse, urljoin
 import httpx
+from fastapi import HTTPException
 from backend.config import get_legacy_ssl_context
 from backend.security import (
     inspect_stream_chunk_safety,
@@ -13,6 +14,7 @@ from backend.security import (
     is_https_camera_port,
     is_web_camera_port,
 )
+from backend.services.tor_service import tor_service
 
 logger = logging.getLogger("worldcams.resolver")
 
@@ -494,6 +496,9 @@ class VendorRtspResolver:
         Otherwise probes the target path and vendor candidate paths to negotiate Digest/Basic auth.
         Returns (is_success, resolved_rtsp_url, matched_credential).
         """
+        if tor_service.should_route_via_tor(ip):
+            await tor_service._require_socks_ready()
+
         vendor_key = self.detect_vendor_key(product)
         if vendor_key == "generic" and realm:
             realm_vendor = self.detect_vendor_key(realm)
@@ -606,15 +611,19 @@ class VendorRtspResolver:
             f"Accept: application/sdp\r\n\r\n"
         )
 
+        eff_timeout = max(timeout, 3.5) if tor_service.should_route_via_tor(host) else timeout
+
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
-                timeout=timeout
+            reader, writer = await tor_service.open_connection(
+                host,
+                port,
+                timeout=eff_timeout,
+                circuit_key=f"{host}:{port}",
             )
             writer.write(req_initial.encode())
             await writer.drain()
 
-            raw_resp = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+            raw_resp = await asyncio.wait_for(reader.read(1024), timeout=eff_timeout)
             resp_str = raw_resp.decode(errors="ignore")
 
             if resp_str.startswith("RTSP/1.0 200"):
@@ -656,7 +665,7 @@ class VendorRtspResolver:
                     try:
                         writer.write(req_auth.encode())
                         await writer.drain()
-                        raw_auth = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+                        raw_auth = await asyncio.wait_for(reader.read(1024), timeout=eff_timeout)
                         resp_auth = raw_auth.decode(errors="ignore")
                     except Exception:
                         resp_auth = ""
@@ -674,7 +683,7 @@ class VendorRtspResolver:
                     # If server closed the socket immediately after 401 (resp_auth is empty), retry on a new socket
                     if not resp_auth:
                         ok_direct, direct_url = await self.probe_rtsp_digest_auth(
-                            host, port, path, creds, realm, nonce, timeout=timeout
+                            host, port, path, creds, realm, nonce, timeout=eff_timeout
                         )
                         if ok_direct:
                             return True, 200, direct_url, realm, nonce
@@ -690,6 +699,8 @@ class VendorRtspResolver:
             tokens = resp_str.split(None, 2)
             code = int(tokens[1]) if len(tokens) > 1 and tokens[1].isdigit() else 0
             return False, code, uri, realm, nonce
+        except HTTPException:
+            raise
         except Exception:
             pass
 
@@ -727,14 +738,17 @@ class VendorRtspResolver:
             f"User-Agent: {user_agent}\r\n"
             f"Accept: application/sdp\r\n\r\n"
         )
+        eff_timeout = max(timeout, 3.5) if tor_service.should_route_via_tor(host) else timeout
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
-                timeout=timeout
+            reader, writer = await tor_service.open_connection(
+                host,
+                port,
+                timeout=eff_timeout,
+                circuit_key=f"{host}:{port}",
             )
             writer.write(req.encode())
             await writer.drain()
-            raw = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+            raw = await asyncio.wait_for(reader.read(1024), timeout=eff_timeout)
             resp = raw.decode(errors="ignore")
 
             if resp.startswith("RTSP/1.0 200"):
@@ -763,7 +777,7 @@ class VendorRtspResolver:
                     )
                     writer.write(req2.encode())
                     await writer.drain()
-                    raw2 = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+                    raw2 = await asyncio.wait_for(reader.read(1024), timeout=eff_timeout)
                     resp2 = raw2.decode(errors="ignore")
                     if resp2.startswith("RTSP/1.0 200"):
                         writer.close()
@@ -778,6 +792,8 @@ class VendorRtspResolver:
                 await writer.wait_closed()
             except Exception:
                 pass
+        except HTTPException:
+            raise
         except Exception:
             pass
         return False, ""
@@ -797,12 +813,19 @@ class VendorRtspResolver:
         Uses stream reading + magic-byte inspection so honeypots disguising HTML/malware as image/jpeg are blocked.
         Includes automatic fallback from HTTPS to plaintext HTTP if SSL_ERROR_RX_RECORD_TOO_LONG occurs on port 443.
         """
+        eff_timeout = max(timeout, 4.0) if tor_service.should_route_via_tor(host) else timeout
         schemes = ["https", "http"] if (port == 443 or is_https) else ["http"]
         for scheme in schemes:
             url = f"{scheme}://{host}:{port}{path}"
             verify_arg = get_legacy_ssl_context() if scheme == "https" else False
             try:
-                async with httpx.AsyncClient(timeout=timeout, verify=verify_arg, follow_redirects=False) as client:
+                async with await tor_service.create_http_client(
+                    url,
+                    verify=verify_arg,
+                    timeout=eff_timeout,
+                    follow_redirects=False,
+                    circuit_key=f"{host}:{port}",
+                ) as client:
                     async with client.stream("GET", url) as res:
                         ctype = res.headers.get("content-type", "").lower()
                         if res.status_code == 200:
@@ -817,6 +840,8 @@ class VendorRtspResolver:
                                 is_safe, _ = inspect_stream_chunk_safety(first_chunk, ctype)
                                 if is_safe:
                                     return True, url, ("mjpeg" if is_mjpeg else "jpeg")
+            except HTTPException:
+                raise
             except Exception as e:
                 err_str = str(e).lower()
                 # If HTTPS failed due to SSL mismatch (e.g. RECORD_TOO_LARGE, WRONG_VERSION_NUMBER), retry in plain HTTP
@@ -840,6 +865,9 @@ class VendorRtspResolver:
         - Step 2: Only if no path works without credentials, tests default vendor credentials across candidate paths.
         - Falls back to HTTP MJPEG video / snapshot validation if RTSP is unreachable.
         """
+        if tor_service.should_route_via_tor(ip):
+            await tor_service._require_socks_ready()
+
         vendor_key = self.detect_vendor_key(product)
         profile = VENDOR_RTSP_PROFILES.get(vendor_key, VENDOR_RTSP_PROFILES["generic"])
         generic_profile = VENDOR_RTSP_PROFILES["generic"]
@@ -895,6 +923,8 @@ class VendorRtspResolver:
 
                 batch_reachable = False
                 for res in results:
+                    if isinstance(res, HTTPException):
+                        raise res
                     if isinstance(res, tuple):
                         success, code, url, realm, nonce = res
                         if code != 0:
@@ -981,6 +1011,8 @@ class VendorRtspResolver:
             tested_count += len(WEB_SNAPSHOT_PATHS)
 
             for h_res in http_results:
+                if isinstance(h_res, HTTPException):
+                    raise h_res
                 if isinstance(h_res, tuple) and h_res[0]:
                     return {
                         "resolved": True,
@@ -999,8 +1031,14 @@ class VendorRtspResolver:
             for s in schemes_to_test:
                 verify_arg = get_legacy_ssl_context() if s == "https" else False
                 try:
-                    async with httpx.AsyncClient(timeout=1.8, verify=verify_arg, follow_redirects=False) as client:
-                        portal_url = f"{s}://{ip}:{port}/"
+                    portal_url = f"{s}://{ip}:{port}/"
+                    async with await tor_service.create_http_client(
+                        portal_url,
+                        verify=verify_arg,
+                        timeout=4.0 if tor_service.should_route_via_tor(ip) else 1.8,
+                        follow_redirects=False,
+                        circuit_key=f"{ip}:{port}",
+                    ) as client:
                         root_res = await client.get(portal_url)
                         # Handle same-host redirect safely
                         if root_res.status_code in (301, 302, 303, 307, 308):
@@ -1061,6 +1099,8 @@ class VendorRtspResolver:
                                 "auth": "web_interface",
                                 "message": f"Isolated Camera Web Portal on port {port} ({proto_note}) — Code Execution Blocked"
                             }
+                except HTTPException:
+                    raise
                 except Exception as e:
                     err_str = str(e).lower()
                     if s == "https" and any(k in err_str for k in ["ssl", "record", "version", "handshake", "connect"]):
