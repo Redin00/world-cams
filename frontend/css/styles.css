@@ -149,6 +149,18 @@ body.dark-theme {
 .metric-card.critical {
   border-color: rgba(244, 63, 94, 0.35);
   background: rgba(244, 63, 94, 0.08);
+  transition: all 0.15s ease;
+}
+
+.metric-card.critical:hover {
+  border-color: rgba(244, 63, 94, 0.65);
+  background: rgba(244, 63, 94, 0.15);
+}
+
+.metric-card.critical.active {
+  border-color: var(--accent-rose);
+  background: rgba(244, 63, 94, 0.24);
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.3);
 }
 
 .metric-card.critical .metric-val {

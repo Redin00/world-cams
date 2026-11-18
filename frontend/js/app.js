@@ -15,6 +15,7 @@ class AppController {
       org: '',
       port: '',
       product: '',
+      auth_status: '',
       search: '',
       is_favorite: null,
       limit: 25000,
@@ -52,6 +53,7 @@ class AppController {
     // Header stats
     this.statTotal = document.getElementById('stat-total');
     this.statUnauth = document.getElementById('stat-unauth');
+    this.metricUnauth = document.getElementById('metric-unauth');
     this.statFavorites = document.getElementById('stat-favorites');
     this.metricFavorites = document.getElementById('metric-favorites');
     this.statMtx = document.getElementById('stat-mtx');
@@ -147,6 +149,18 @@ class AppController {
     // Favorites Metric in Header Navbar
     this.metricFavorites?.addEventListener('click', () => {
       this.setFavoritesFilter(true);
+      if (window.innerWidth <= 900) {
+        this.switchMobileTab('feeds');
+      }
+    });
+
+    // Unauthenticated Metric Filter Toggle in Header Navbar
+    this.metricUnauth?.addEventListener('click', () => {
+      const nextAuth = this.currentFilters.auth_status === 'unauthenticated' ? '' : 'unauthenticated';
+      this.currentFilters.auth_status = nextAuth;
+      this.metricUnauth.classList.toggle('active', nextAuth === 'unauthenticated');
+      this.loadFeeds();
+      this.updateFilterBadgeDot();
       if (window.innerWidth <= 900) {
         this.switchMobileTab('feeds');
       }
@@ -632,6 +646,7 @@ class AppController {
       this.currentFilters.org ||
       this.currentFilters.port ||
       this.currentFilters.product ||
+      this.currentFilters.auth_status ||
       (this.currentFilters.is_favorite === true)
     );
     this.filterBadgeDot.style.display = hasFilter ? 'block' : 'none';
@@ -1027,6 +1042,7 @@ class AppController {
     if (this.currentFilters.org) params.append('org', this.currentFilters.org);
     if (this.currentFilters.port) params.append('port', this.currentFilters.port);
     if (this.currentFilters.product) params.append('product', this.currentFilters.product);
+    if (this.currentFilters.auth_status) params.append('auth_status', this.currentFilters.auth_status);
     if (this.currentFilters.search) params.append('search', this.currentFilters.search);
     if (this.currentFilters.is_favorite !== null && this.currentFilters.is_favorite !== undefined) {
       params.append('is_favorite', this.currentFilters.is_favorite);
@@ -1145,7 +1161,6 @@ class AppController {
 
       const safeId = esc(feed.id);
       const safeProduct = esc(feed.product || 'IP Camera');
-      const safeRisk = esc(feed.risk_level || 'high');
       const safeIp = esc(feed.ip || '');
       const safePort = esc(feed.port || '');
       const safeCity = esc(feed.city || 'Unknown');
@@ -1175,7 +1190,6 @@ class AppController {
         <div class="feed-card-info">
           <div class="feed-card-header">
             <span class="feed-card-product" title="${safeProduct}">${safeProduct}</span>
-            <span class="badge-risk ${safeRisk}">${safeRisk}</span>
           </div>
           <div class="feed-card-ip">
             <span>${safeIp}</span>
@@ -1509,12 +1523,14 @@ class AppController {
       org: '',
       port: '',
       product: '',
+      auth_status: '',
       search: '',
       is_favorite: null,
       limit: 25000,
       offset: 0
     };
 
+    this.metricUnauth?.classList.remove('active');
     this.updateFavoritesUIState();
     this.loadFeeds();
     this.updateFilterBadgeDot();

@@ -71,7 +71,6 @@ class WorldMap {
       <div class="map-popup-card">
         <div class="map-popup-header">
           <span class="map-popup-title">${esc(feed.product || 'IP Camera')}</span>
-          <span class="badge-risk ${esc(feed.risk_level || 'high')}">${esc(feed.risk_level || 'high')}</span>
         </div>
         <div class="map-popup-ip">${esc(feed.ip)}:${esc(feed.port)}</div>
         <div class="map-popup-details">
