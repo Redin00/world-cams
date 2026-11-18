@@ -66,6 +66,8 @@ class StreamPlayer {
     this.badgeEl = document.getElementById('player-status-badge');
     this.titleEl = document.getElementById('player-feed-title');
     this.btnOpenWeb = document.getElementById('btn-open-web-cam');
+    this.isHlsMode = false;
+    this.activeStreamData = null;
     
     // Tech info elements
     this.techProto = document.getElementById('tech-proto');
@@ -304,6 +306,8 @@ class StreamPlayer {
     }
     this.isSnapshotLoaded = false;
     this.currentFeedTorRouted = false;
+    this.isHlsMode = false;
+    this.activeStreamData = null;
 
     // 3. Clear Isolated Portal card & source preview
     if (this.webConsoleDisplay) {
@@ -752,6 +756,8 @@ class StreamPlayer {
           clearTimeout(this.connectTimeoutTimer);
           this.connectTimeoutTimer = null;
         }
+        this.activeStreamData = streamData;
+        this.isHlsMode = false;
         this.webrtcFrame.src = `${streamData.webrtc_url}/?autoplay=true&muted=true`;
         this.monitorRtspTelemetry(streamData.stream_path, targetId, feed, isAltRtsp);
       }
@@ -813,7 +819,15 @@ class StreamPlayer {
             if (this.snapshotEl) this.snapshotEl.style.display = 'none';
             if (this.videoEl) this.videoEl.style.display = 'none';
             if (this.webrtcFrame) this.webrtcFrame.style.display = 'block';
-            this.setStatus('LIVE WEBRTC');
+
+            const codecUpper = (status.codec || '').toUpperCase();
+            if ((codecUpper.includes('H265') || codecUpper.includes('HEVC')) && this.activeStreamData?.hls_url && !this.isHlsMode) {
+              this.isHlsMode = true;
+              if (this.webrtcFrame) this.webrtcFrame.src = `${this.activeStreamData.hls_url}/?autoplay=true&muted=true`;
+              this.setStatus('LIVE HLS');
+            } else {
+              this.setStatus(this.isHlsMode ? 'LIVE HLS' : 'LIVE WEBRTC');
+            }
 
             const resInfo = status.resolution ? ` [${status.resolution}]` : '';
             const codecInfo = status.codec ? ` ${status.codec}` : (status.tracks && status.tracks.length ? ` ${status.tracks.join('/')}` : '');

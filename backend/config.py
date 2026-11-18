@@ -34,12 +34,16 @@ class Settings(BaseSettings):
 
     @property
     def effective_hls_url(self) -> str:
+        if self.MEDIAMTX_HLS_URL and self.MEDIAMTX_HLS_URL != "http://localhost:8888":
+            return self.MEDIAMTX_HLS_URL.rstrip("/")
         if self.MEDIAMTX_PUBLIC_HOST:
             return f"http://{self.MEDIAMTX_PUBLIC_HOST}:8888"
         return self.MEDIAMTX_HLS_URL
 
     @property
     def effective_whep_url(self) -> str:
+        if self.MEDIAMTX_WHEP_URL and self.MEDIAMTX_WHEP_URL != "http://localhost:8889":
+            return self.MEDIAMTX_WHEP_URL.rstrip("/")
         if self.MEDIAMTX_PUBLIC_HOST:
             return f"http://{self.MEDIAMTX_PUBLIC_HOST}:8889"
         return self.MEDIAMTX_WHEP_URL

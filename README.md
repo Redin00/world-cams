@@ -199,6 +199,41 @@ sudo ufw allow 8189/tcp
 > **Preventing Black RTSP Video on a VPS (`MEDIAMTX_PUBLIC_HOST`)**:
 > Because `mediamtx.yml` sets `webrtcICEServers2: []` (disabling external STUN to prevent IP leaks), MediaMTX behind cloud NAT cannot auto-discover its public IP. Set `MEDIAMTX_PUBLIC_HOST=<your-vps-public-ip-or-domain>` in `.env` and restart MediaMTX + FastAPI so WebRTC ICE candidates advertise your public address. Keep internal ports (`9997`, `8554`, `9050`, `9051`) firewalled from the public internet.
 
+### 2. Reverse Proxy Setup (Nginx / HTTPS)
+When hosting behind Nginx (especially over `https://`), proxy `/webrtc/` and `/hls/` alongside `/` so MediaMTX streams are not blocked as mixed content, and set `MEDIAMTX_WHEP_URL` / `MEDIAMTX_HLS_URL` in `.env`:
+
+```env
+MEDIAMTX_PUBLIC_HOST=your.domain.com
+MEDIAMTX_WHEP_URL=https://your.domain.com/webrtc
+MEDIAMTX_HLS_URL=https://your.domain.com/hls
+```
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_buffering off;  # Required for live MJPEG /api/proxy/stream
+}
+
+location /webrtc/ {
+    proxy_pass http://127.0.0.1:8889/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+
+location /hls/ {
+    proxy_pass http://127.0.0.1:8888/;
+    proxy_set_header Host $host;
+    proxy_buffering off;
+}
+```
+*(Note: Keep `8189/UDP` and `8189/TCP` open on the VPS firewall/security group for WebRTC media tracks.)*
+
 
 ---
 
