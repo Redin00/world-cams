@@ -681,7 +681,7 @@ class StreamPlayer {
           if (this.techProto) this.techProto.textContent = `WAN Port ${portNum} Unreachable`;
         }
       }
-    }, 10000);
+    }, 20000);
 
     try {
       const res = await fetch('/api/streams/play', {
@@ -867,7 +867,8 @@ class StreamPlayer {
                 port: feed.port,
                 product: feed.product,
                 current_url: feed.rtsp_url
-              })
+              }),
+              signal: this.abortController ? this.abortController.signal : undefined
             });
             if (this.activeFeedId !== targetId) return;
             if (probeRes.ok) {

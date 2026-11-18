@@ -676,7 +676,12 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     current_works = True
 
         if not current_works:
-            resolve_res = await rtsp_resolver.resolve_camera(feed.ip, feed.port, product_hint, rtsp_url, continuous=True)
+            resolve_res = await rtsp_resolver.resolve_camera(
+                feed.ip, feed.port, product_hint, rtsp_url, continuous=True,
+                disconnect_check=request.is_disconnected
+            )
+            if await request.is_disconnected():
+                raise HTTPException(status_code=499, detail="Client disconnected")
             if resolve_res.get("resolved"):
                 if resolve_res.get("protocol") == "rtsp":
                     rtsp_url = resolve_res["stream_url"]
@@ -1276,6 +1281,7 @@ async def stop_stream_route(payload: Dict[str, Any]):
 @app.post("/api/streams/resolve-rtsp", response_model=ResolveRtspResponse)
 async def resolve_camera_rtsp(
     payload: ResolveRtspRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1311,7 +1317,8 @@ async def resolve_camera_rtsp(
         ip=ip,
         port=port,
         product=product,
-        current_url=current_url
+        current_url=current_url,
+        disconnect_check=request.is_disconnected
     )
 
     if feed and resolve_result.get("resolved"):

@@ -3,7 +3,7 @@ import base64
 import hashlib
 import logging
 import re
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, Callable, Awaitable
 from urllib.parse import urlparse, urljoin
 import httpx
 from fastapi import HTTPException
@@ -856,7 +856,8 @@ class VendorRtspResolver:
         port: int,
         product: str = "",
         current_url: str = "",
-        continuous: bool = True
+        continuous: bool = True,
+        disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> Dict[str, Any]:
         """
         Automated Vendor RTSP Profile & Continuous Resolver Engine.
@@ -916,6 +917,16 @@ class VendorRtspResolver:
             # Process ALL candidate paths in concurrent batches of 8 without credentials
             BATCH_SIZE = 8
             for i in range(0, len(candidate_paths), BATCH_SIZE):
+                if disconnect_check and await disconnect_check():
+                    logger.info(f"Aborted RTSP probing for {ip}:{port} (client disconnected).")
+                    return {
+                        "resolved": False,
+                        "protocol": "aborted",
+                        "stream_url": current_url,
+                        "vendor": vendor_key,
+                        "tested_count": tested_count,
+                        "message": "Client disconnected; probing stopped."
+                    }
                 batch = candidate_paths[i:i + BATCH_SIZE]
                 tasks = [self.probe_rtsp_path(ip, port, path, creds=None, timeout=1.0) for path in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -949,9 +960,19 @@ class VendorRtspResolver:
                     break
 
             # Step 1B: ONLY AFTER all candidate paths were tested without credentials,
-            # try default vendor credentials across the paths that required authentication
+            # try default vendor credentials across the top 3 paths that required authentication
             if auth_required_candidates and creds_list:
-                for target_p, target_realm, target_nonce in auth_required_candidates:
+                for target_p, target_realm, target_nonce in auth_required_candidates[:3]:
+                    if disconnect_check and await disconnect_check():
+                        logger.info(f"Aborted RTSP credential probing for {ip}:{port} (client disconnected).")
+                        return {
+                            "resolved": False,
+                            "protocol": "aborted",
+                            "stream_url": current_url,
+                            "vendor": vendor_key,
+                            "tested_count": tested_count,
+                            "message": "Client disconnected; probing stopped."
+                        }
                     logger.info(f"Testing default vendor credentials on 401 endpoint: {target_p} (Vendor: {vendor_key.upper()}, Realm: {target_realm})...")
                     retry_ok, auth_url, used_cred = await self.retry_rtsp_with_default_creds(
                         ip=ip,
@@ -975,8 +996,18 @@ class VendorRtspResolver:
                             "message": f"Resolved authenticated RTSP stream with default credentials ({used_cred[0]}:{used_cred[1]}): {auth_url}"
                         }
             elif not auth_required_candidates and creds_list and batch_reachable:
-                # If no paths returned an explicit 401 challenge but host is responsive, try vendor paths with default creds
-                for target_p in candidate_paths[:5]:
+                # If no paths returned an explicit 401 challenge but host is responsive, try top 3 vendor paths with default creds
+                for target_p in candidate_paths[:3]:
+                    if disconnect_check and await disconnect_check():
+                        logger.info(f"Aborted RTSP credential probing for {ip}:{port} (client disconnected).")
+                        return {
+                            "resolved": False,
+                            "protocol": "aborted",
+                            "stream_url": current_url,
+                            "vendor": vendor_key,
+                            "tested_count": tested_count,
+                            "message": "Client disconnected; probing stopped."
+                        }
                     retry_ok, auth_url, used_cred = await self.retry_rtsp_with_default_creds(
                         ip=ip,
                         port=port,
