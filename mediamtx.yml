@@ -25,7 +25,7 @@ rtspTransports: [tcp]
 hls: true
 hlsAddress: :8888
 hlsAllowOrigins: ["*"]
-hlsAlwaysRemux: false
+hlsAlwaysRemux: true
 hlsVariant: lowLatency
 hlsSegmentCount: 7
 hlsSegmentDuration: 1s

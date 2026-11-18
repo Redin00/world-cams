@@ -750,15 +750,17 @@ class StreamPlayer {
         return;
       }
 
-      // Embed MediaMTX WebRTC player frame and initiate live telemetry verification
+      // Embed MediaMTX player frame (HLS directly when configured, otherwise WebRTC) and initiate live telemetry verification
       if (this.webrtcFrame) {
         if (this.connectTimeoutTimer) {
           clearTimeout(this.connectTimeoutTimer);
           this.connectTimeoutTimer = null;
         }
         this.activeStreamData = streamData;
-        this.isHlsMode = false;
-        this.webrtcFrame.src = `${streamData.webrtc_url}/?autoplay=true&muted=true`;
+        const useHlsDirectly = (streamData.playback_mode === 'hls' || !streamData.webrtc_url) && Boolean(streamData.hls_url);
+        this.isHlsMode = useHlsDirectly;
+        const playerBaseUrl = useHlsDirectly ? streamData.hls_url : streamData.webrtc_url;
+        this.webrtcFrame.src = `${playerBaseUrl}/?autoplay=true&muted=true`;
         this.monitorRtspTelemetry(streamData.stream_path, targetId, feed, isAltRtsp);
       }
     } catch (err) {
@@ -838,9 +840,10 @@ class StreamPlayer {
               const torSuffix = this.currentFeedTorRouted
                 ? ` [TOR ${this.currentFeedTorCircuit || ''}]`.trimEnd()
                 : '';
+              const protoLabel = this.isHlsMode ? 'HLS' : 'WebRTC';
               this.techProto.textContent = (isAltRtsp
-                ? `Alt RTSP 8554 Verified: ${codecInfo}${resInfo}${byteInfo}`
-                : `MediaMTX WebRTC Verified: ${codecInfo}${resInfo}${byteInfo}`) + torSuffix;
+                ? `Alt RTSP 8554 ${protoLabel} Verified: ${codecInfo}${resInfo}${byteInfo}`
+                : `MediaMTX ${protoLabel} Verified: ${codecInfo}${resInfo}${byteInfo}`) + torSuffix;
             }
             return;
           }

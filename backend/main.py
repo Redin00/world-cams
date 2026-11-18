@@ -2,7 +2,6 @@ import os
 import html
 import json
 import logging
-import httpx
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse, urljoin, quote
@@ -10,7 +9,7 @@ from urllib.parse import urlparse, urljoin, quote
 from fastapi import FastAPI, Depends, HTTPException, Query, Header, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse, Response, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
 from sqlalchemy import select, func, or_, and_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -716,19 +715,17 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
 
     route_info = await mediamtx_service.register_stream(stream_path, rtsp_url)
 
-    # Dynamic host resolution for external VPS/remote clients:
-    # If MEDIAMTX_PUBLIC_HOST is not configured, dynamically rewrite any
-    # 'localhost' or '127.0.0.1' with the host IP/domain used by the client.
-    if not settings.MEDIAMTX_PUBLIC_HOST:
-        client_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "").split(":")[0] or ""
-        if client_host and client_host not in ("localhost", "127.0.0.1", "0.0.0.0"):
-            for k in ("webrtc_url", "webrtc_whep_url", "hls_url", "hls_manifest_url"):
-                if route_info.get(k):
-                    route_info[k] = (
-                        route_info[k]
-                        .replace("http://localhost:", f"http://{client_host}:")
-                        .replace("http://127.0.0.1:", f"http://{client_host}:")
-                    )
+    # Dynamic host resolution for direct LAN/IP access without a reverse proxy:
+    # Rewrite 'localhost' or '127.0.0.1' with the host IP/domain used by the client.
+    client_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "").split(":")[0] or ""
+    if client_host and client_host not in ("localhost", "127.0.0.1", "0.0.0.0"):
+        for k in ("webrtc_url", "webrtc_whep_url", "hls_url", "hls_manifest_url"):
+            if route_info.get(k):
+                route_info[k] = (
+                    route_info[k]
+                    .replace("http://localhost:", f"http://{client_host}:")
+                    .replace("http://127.0.0.1:", f"http://{client_host}:")
+                )
 
     route_info["tor_routed"] = tor_service.enabled
     route_info["tor_circuit_id"] = None
@@ -1628,30 +1625,6 @@ async def health_check():
         "tor_enabled": tor_service.enabled,
         "tor_socks_alive": tor_alive,
     }
-
-@app.api_route("/{stream_path}/whep/{session_id}", methods=["PATCH", "DELETE", "OPTIONS"])
-async def proxy_whep_session(stream_path: str, session_id: str, request: Request):
-    """
-    Forward MediaMTX WHEP ICE-trickle (PATCH) and session teardown (DELETE) requests
-    when Nginx location /webrtc/ strips its prefix and MediaMTX returns a root-relative Location header.
-    """
-    safe_stream = validate_safe_identifier(stream_path, "stream_path")
-    safe_session = validate_safe_identifier(session_id, "session_id")
-    body = await request.body()
-    fwd_headers = {}
-    if request.headers.get("content-type"):
-        fwd_headers["Content-Type"] = request.headers["content-type"]
-    if request.headers.get("if-match"):
-        fwd_headers["If-Match"] = request.headers["if-match"]
-
-    target = f"http://127.0.0.1:8889/{safe_stream}/whep/{safe_session}"
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.request(request.method, target, content=body, headers=fwd_headers)
-    resp_headers = {}
-    if resp.headers.get("content-type"):
-        resp_headers["Content-Type"] = resp.headers["content-type"]
-    return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)
-
 
 # ==========================================
 # Mount Static Frontend

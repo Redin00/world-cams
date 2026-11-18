@@ -60,10 +60,6 @@ class MediaMTXService:
             }
             if not is_win:
                 popen_kwargs["start_new_session"] = True
-            env = os.environ.copy()
-            if settings.MEDIAMTX_PUBLIC_HOST:
-                env["MTX_WEBRTCADDITIONALHOSTS"] = settings.MEDIAMTX_PUBLIC_HOST
-            popen_kwargs["env"] = env
 
             self.process = subprocess.Popen(
                 [str(bin_path), str(conf_path)],
@@ -183,6 +179,7 @@ class MediaMTXService:
                     "is_simulated": is_demo_stream,
                     "tor_routed": tor_routed,
                     "tor_circuit_id": tor_service.current_circuit_id if tor_routed else None,
+                    "playback_mode": settings.effective_playback_mode,
                     "message": "Stream pipeline ready via Tor SOCKS5 Bridge" if tor_routed else "Stream pipeline ready in MediaMTX"
                 }
             except Exception as e:
@@ -198,6 +195,7 @@ class MediaMTXService:
                     "is_simulated": is_demo_stream,
                     "tor_routed": tor_routed,
                     "tor_circuit_id": tor_service.current_circuit_id if tor_routed else None,
+                    "playback_mode": settings.effective_playback_mode,
                     "message": "MediaMTX route configured."
                 }
 

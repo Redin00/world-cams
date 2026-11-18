@@ -30,23 +30,25 @@ class Settings(BaseSettings):
     MEDIAMTX_HLS_URL: str = "http://localhost:8888"
     MEDIAMTX_WHEP_URL: str = "http://localhost:8889"
     MEDIAMTX_RTSP_PORT: int = 8554
-    MEDIAMTX_PUBLIC_HOST: Optional[str] = None
+    MEDIAMTX_PLAYBACK_MODE: str = "auto"
+
+    @property
+    def effective_playback_mode(self) -> str:
+        mode = (self.MEDIAMTX_PLAYBACK_MODE or "auto").strip().lower()
+        if mode in ("hls", "webrtc"):
+            return mode
+        # Auto: use HLS directly when proxied over HTTPS Nginx (avoids UDP/8189 WebRTC blocks)
+        if self.MEDIAMTX_HLS_URL and self.MEDIAMTX_HLS_URL.lower().startswith("https://"):
+            return "hls"
+        return "webrtc"
 
     @property
     def effective_hls_url(self) -> str:
-        if self.MEDIAMTX_HLS_URL and self.MEDIAMTX_HLS_URL != "http://localhost:8888":
-            return self.MEDIAMTX_HLS_URL.rstrip("/")
-        if self.MEDIAMTX_PUBLIC_HOST:
-            return f"http://{self.MEDIAMTX_PUBLIC_HOST}:8888"
-        return self.MEDIAMTX_HLS_URL
+        return self.MEDIAMTX_HLS_URL.rstrip("/")
 
     @property
     def effective_whep_url(self) -> str:
-        if self.MEDIAMTX_WHEP_URL and self.MEDIAMTX_WHEP_URL != "http://localhost:8889":
-            return self.MEDIAMTX_WHEP_URL.rstrip("/")
-        if self.MEDIAMTX_PUBLIC_HOST:
-            return f"http://{self.MEDIAMTX_PUBLIC_HOST}:8889"
-        return self.MEDIAMTX_WHEP_URL
+        return self.MEDIAMTX_WHEP_URL.rstrip("/")
 
     # Database & Data Paths
     DATABASE_URL: str = f"sqlite+aiosqlite:///{BASE_DIR.as_posix()}/world_cams.db"

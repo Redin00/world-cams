@@ -137,13 +137,10 @@ APP_HOST=0.0.0.0
 APP_PORT=8000
 DEBUG=True
 
-# Required on a NATted VPS so WebRTC ICE candidates include your public IP/domain
-# (Because external STUN is disabled in mediamtx.yml to prevent STUN IP leaks)
-# MEDIAMTX_PUBLIC_HOST=your-vps-ip-or-domain
-
 # MediaMTX Ports
 MEDIAMTX_RTSP_PORT=8554
 MEDIAMTX_API_URL=http://localhost:9997
+MEDIAMTX_PLAYBACK_MODE=auto
 MEDIAMTX_WHEP_URL=http://localhost:8889
 MEDIAMTX_HLS_URL=http://localhost:8888
 
@@ -195,16 +192,11 @@ sudo ufw allow 8189/tcp
 > [!NOTE]
 > On Oracle Cloud, AWS, or GCP, remember to also add matching **Ingress Rules** in the Cloud Web Console (VCN Security List / Security Group).
 
-> [!IMPORTANT]
-> **Preventing Black RTSP Video on a VPS (`MEDIAMTX_PUBLIC_HOST`)**:
-> Because `mediamtx.yml` sets `webrtcICEServers2: []` (disabling external STUN to prevent IP leaks), MediaMTX behind cloud NAT cannot auto-discover its public IP. Set `MEDIAMTX_PUBLIC_HOST=<your-vps-public-ip-or-domain>` in `.env` and restart MediaMTX + FastAPI so WebRTC ICE candidates advertise your public address. Keep internal ports (`9997`, `8554`, `9050`, `9051`) firewalled from the public internet.
-
 ### 2. Reverse Proxy Setup (Nginx / HTTPS)
-When hosting behind Nginx (especially over `https://`), proxy `/webrtc/` and `/hls/` alongside `/` so MediaMTX streams are not blocked as mixed content, and set `MEDIAMTX_WHEP_URL` / `MEDIAMTX_HLS_URL` in `.env`:
+When hosting behind Nginx (especially over `https://`), proxy `/hls/` alongside `/` so MediaMTX streams are served over standard HTTPS port `443` without mixed-content blocks, and set `MEDIAMTX_HLS_URL` in `.env`:
 
 ```env
-MEDIAMTX_PUBLIC_HOST=your.domain.com
-MEDIAMTX_WHEP_URL=https://your.domain.com/webrtc
+MEDIAMTX_PLAYBACK_MODE=auto
 MEDIAMTX_HLS_URL=https://your.domain.com/hls
 ```
 
@@ -218,22 +210,13 @@ location / {
     proxy_buffering off;  # Required for live MJPEG /api/proxy/stream
 }
 
-location /webrtc/ {
-    proxy_pass http://127.0.0.1:8889/;
-    proxy_redirect / /webrtc/;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-}
-
 location /hls/ {
     proxy_pass http://127.0.0.1:8888/;
     proxy_set_header Host $host;
     proxy_buffering off;
 }
 ```
-*(Note: Keep `8189/UDP` and `8189/TCP` open on the VPS firewall/security group for WebRTC media tracks.)*
+*(Note: With `MEDIAMTX_PLAYBACK_MODE=auto` and an `https://` `MEDIAMTX_HLS_URL`, RTSP playback uses Low-Latency HLS over standard HTTPS port `443` without needing port `8189` or exposing your VPS origin IP behind Cloudflare.)*
 
 
 ---
