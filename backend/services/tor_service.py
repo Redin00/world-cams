@@ -479,7 +479,7 @@ class TorProxyService:
                     remote_reader, remote_writer = await self.open_connection(
                         cam_ip,
                         int(cam_port),
-                        timeout=8.0,
+                        timeout=12.0,
                         circuit_key=circuit_key or clean_path,
                     )
 

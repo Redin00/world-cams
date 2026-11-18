@@ -137,8 +137,8 @@ APP_HOST=0.0.0.0
 APP_PORT=8000
 DEBUG=True
 
-# Optional: Set your VPS Public IP or Domain if behind NAT/reverse proxy
-# (If omitted, WorldCams automatically detects it from the incoming Host header)
+# Required on a NATted VPS so WebRTC ICE candidates include your public IP/domain
+# (Because external STUN is disabled in mediamtx.yml to prevent STUN IP leaks)
 # MEDIAMTX_PUBLIC_HOST=your-vps-ip-or-domain
 
 # MediaMTX Ports
@@ -194,6 +194,10 @@ sudo ufw allow 8189/tcp
 
 > [!NOTE]
 > On Oracle Cloud, AWS, or GCP, remember to also add matching **Ingress Rules** in the Cloud Web Console (VCN Security List / Security Group).
+
+> [!IMPORTANT]
+> **Preventing Black RTSP Video on a VPS (`MEDIAMTX_PUBLIC_HOST`)**:
+> Because `mediamtx.yml` sets `webrtcICEServers2: []` (disabling external STUN to prevent IP leaks), MediaMTX behind cloud NAT cannot auto-discover its public IP. Set `MEDIAMTX_PUBLIC_HOST=<your-vps-public-ip-or-domain>` in `.env` and restart MediaMTX + FastAPI so WebRTC ICE candidates advertise your public address. Keep internal ports (`9997`, `8554`, `9050`, `9051`) firewalled from the public internet.
 
 
 ---

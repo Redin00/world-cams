@@ -785,7 +785,7 @@ class StreamPlayer {
     }
 
     let attempts = 0;
-    const maxAttempts = 7; // Verify every 900ms for up to ~6.5 seconds
+    const maxAttempts = this.currentFeedTorRouted ? 20 : 10; // Verify every 900ms (~18s over Tor, ~9s direct)
 
     this.telemetryInterval = setInterval(async () => {
       // If user switched camera in the meantime, terminate poller

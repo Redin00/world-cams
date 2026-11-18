@@ -611,7 +611,7 @@ class VendorRtspResolver:
             f"Accept: application/sdp\r\n\r\n"
         )
 
-        eff_timeout = max(timeout, 3.5) if tor_service.should_route_via_tor(host) else timeout
+        eff_timeout = max(timeout, 6.0) if tor_service.should_route_via_tor(host) else timeout
 
         try:
             reader, writer = await tor_service.open_connection(
@@ -738,7 +738,7 @@ class VendorRtspResolver:
             f"User-Agent: {user_agent}\r\n"
             f"Accept: application/sdp\r\n\r\n"
         )
-        eff_timeout = max(timeout, 3.5) if tor_service.should_route_via_tor(host) else timeout
+        eff_timeout = max(timeout, 6.0) if tor_service.should_route_via_tor(host) else timeout
         try:
             reader, writer = await tor_service.open_connection(
                 host,
