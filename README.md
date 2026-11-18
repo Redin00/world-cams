@@ -212,6 +212,7 @@ location / {
 
 location /hls/ {
     proxy_pass http://127.0.0.1:8888/;
+    proxy_redirect / /hls/;
     proxy_set_header Host $host;
     proxy_buffering off;
 }

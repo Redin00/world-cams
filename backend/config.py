@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     MEDIAMTX_WHEP_URL: str = "http://localhost:8889"
     MEDIAMTX_RTSP_PORT: int = 8554
     MEDIAMTX_PLAYBACK_MODE: str = "auto"
+    MEDIAMTX_HLS_TRANSCODE_AUDIO: bool = True
 
     @property
     def effective_playback_mode(self) -> str:

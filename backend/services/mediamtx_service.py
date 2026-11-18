@@ -3,6 +3,8 @@ import logging
 import os
 import sys
 import re
+import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -145,28 +147,46 @@ class MediaMTXService:
             else:
                 await tor_service.stop_rtsp_bridge(clean_path)
 
-            payload = {
-                "source": effective_source,
-                "sourceOnDemand": False,
-                "rtspTransport": "tcp"
-            }
+            use_ffmpeg_audio = (
+                settings.effective_playback_mode == "hls"
+                and settings.MEDIAMTX_HLS_TRANSCODE_AUDIO
+                and shutil.which("ffmpeg") is not None
+            )
+            if use_ffmpeg_audio:
+                quoted_src = (
+                    f'"{effective_source.replace(chr(34), "")}"'
+                    if sys.platform == "win32"
+                    else shlex.quote(effective_source)
+                )
+                ffmpeg_cmd = (
+                    f"ffmpeg -nostdin -rtsp_transport tcp -fflags +genpts -i {quoted_src} "
+                    f"-map 0:v:0 -map 0:a:0? -c:v copy -c:a aac -ar 44100 -ac 1 -b:a 48k "
+                    f"-rtsp_transport tcp -f rtsp rtsp://127.0.0.1:{self.rtsp_port}/{clean_path}"
+                )
+                payload = {
+                    "runOnInit": ffmpeg_cmd,
+                    "runOnInitRestart": True,
+                }
+            else:
+                payload = {
+                    "source": effective_source,
+                    "sourceOnDemand": False,
+                    "rtspTransport": "tcp"
+                }
 
         async with httpx.AsyncClient(timeout=4.0) as client:
             try:
-                # Check if path already configured in MediaMTX
+                # Re-add if path already exists so source vs runOnInit fields never conflict
                 check_res = await client.get(f"{self.api_url}/v3/config/paths/get/{clean_path}")
                 if check_res.status_code == 200:
-                    patch_res = await client.patch(
-                        f"{self.api_url}/v3/config/paths/patch/{clean_path}",
-                        json=payload
-                    )
-                    status = "updated" if patch_res.status_code in (200, 204) else "existing"
-                else:
-                    add_res = await client.post(
-                        f"{self.api_url}/v3/config/paths/add/{clean_path}",
-                        json=payload
-                    )
-                    status = "created" if add_res.status_code in (200, 201) else "configured"
+                    await client.delete(f"{self.api_url}/v3/config/paths/delete/{clean_path}")
+                add_res = await client.post(
+                    f"{self.api_url}/v3/config/paths/add/{clean_path}",
+                    json=payload
+                )
+                status = "updated" if check_res.status_code == 200 else (
+                    "created" if add_res.status_code in (200, 201) else "configured"
+                )
 
                 return {
                     "stream_path": clean_path,
