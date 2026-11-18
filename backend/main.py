@@ -1629,6 +1629,30 @@ async def health_check():
         "tor_socks_alive": tor_alive,
     }
 
+@app.api_route("/{stream_path}/whep/{session_id}", methods=["PATCH", "DELETE", "OPTIONS"])
+async def proxy_whep_session(stream_path: str, session_id: str, request: Request):
+    """
+    Forward MediaMTX WHEP ICE-trickle (PATCH) and session teardown (DELETE) requests
+    when Nginx location /webrtc/ strips its prefix and MediaMTX returns a root-relative Location header.
+    """
+    safe_stream = validate_safe_identifier(stream_path, "stream_path")
+    safe_session = validate_safe_identifier(session_id, "session_id")
+    body = await request.body()
+    fwd_headers = {}
+    if request.headers.get("content-type"):
+        fwd_headers["Content-Type"] = request.headers["content-type"]
+    if request.headers.get("if-match"):
+        fwd_headers["If-Match"] = request.headers["if-match"]
+
+    target = f"http://127.0.0.1:8889/{safe_stream}/whep/{safe_session}"
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.request(request.method, target, content=body, headers=fwd_headers)
+    resp_headers = {}
+    if resp.headers.get("content-type"):
+        resp_headers["Content-Type"] = resp.headers["content-type"]
+    return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)
+
+
 # ==========================================
 # Mount Static Frontend
 # ==========================================

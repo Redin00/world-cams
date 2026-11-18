@@ -220,6 +220,7 @@ location / {
 
 location /webrtc/ {
     proxy_pass http://127.0.0.1:8889/;
+    proxy_redirect / /webrtc/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header Upgrade $http_upgrade;
