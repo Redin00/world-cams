@@ -13,4 +13,5 @@ bin/
 *.crt
 *.key
 mediamtx.log
+.tor_data/
 .DS_Store

@@ -59,30 +59,45 @@ async def test_full_pipeline():
         assert len(facets["countries"]) > 0
         assert "favorites_count" in facets
 
-        # 3b. Favorites filter & toggle test
-        print("[*] Testing Favorites toggle & filtering...")
+        # 3b. Favorites filter & toggle test (Admin Only)
+        print("[*] Testing Favorites admin-only toggle & filtering...")
+        from backend.config import settings
+        admin_fav_headers = {"X-Admin-Token": settings.ADMIN_TOKEN}
         sample_feed = all_feeds["items"][0]
         feed_id = sample_feed["id"]
-        # Mark as favorite
-        fav_patch = await client.patch(f"/api/feeds/{feed_id}", json={"is_favorite": True})
+
+        # Unauthenticated favorite toggle & viewing must be blocked / redacted
+        unauth_fav = await client.patch(f"/api/feeds/{feed_id}", json={"is_favorite": True})
+        assert unauth_fav.status_code == 401, f"Expected 401 for unauthenticated favorite toggle, got {unauth_fav.status_code}"
+        unauth_fav_list = await client.get("/api/feeds?is_favorite=true")
+        assert unauth_fav_list.status_code == 401, f"Expected 401 for non-admin /api/feeds?is_favorite=true, got {unauth_fav_list.status_code}"
+
+        # Mark as favorite with valid Admin Token
+        fav_patch = await client.patch(f"/api/feeds/{feed_id}", json={"is_favorite": True}, headers=admin_fav_headers)
         assert fav_patch.status_code == 200
         assert fav_patch.json()["is_favorite"] is True
 
-        # Query favorites
-        fav_res = await client.get("/api/feeds?is_favorite=true")
+        # Non-admin single feed & facets must redact favorite state/count
+        pub_feed = (await client.get(f"/api/feeds/{feed_id}")).json()
+        assert pub_feed["is_favorite"] is False, "Non-admin GET /api/feeds/{id} must redact is_favorite!"
+        pub_facets = (await client.get("/api/facets")).json()
+        assert pub_facets["favorites_count"] == 0, "Non-admin /api/facets must redact favorites_count!"
+
+        # Query favorites as Admin
+        fav_res = await client.get("/api/feeds?is_favorite=true", headers=admin_fav_headers)
         assert fav_res.status_code == 200
         fav_items = fav_res.json()["items"]
         assert any(f["id"] == feed_id for f in fav_items), "Favorited feed not found in /api/feeds?is_favorite=true"
 
-        # Check facets updated
-        facets_updated = (await client.get("/api/facets")).json()
+        # Check facets updated for Admin
+        facets_updated = (await client.get("/api/facets", headers=admin_fav_headers)).json()
         assert facets_updated["favorites_count"] >= 1
 
-        # Unmark favorite
-        unfav_patch = await client.patch(f"/api/feeds/{feed_id}", json={"is_favorite": False})
+        # Unmark favorite with valid Admin Token
+        unfav_patch = await client.patch(f"/api/feeds/{feed_id}", json={"is_favorite": False}, headers=admin_fav_headers)
         assert unfav_patch.status_code == 200
         assert unfav_patch.json()["is_favorite"] is False
-        print(f"    -> Successfully verified favorite toggle, DB persistence, and /api/feeds?is_favorite=true filter.")
+        print(f"    -> Successfully verified admin-only favorite toggle/viewing, redaction, DB persistence, and /api/feeds?is_favorite=true filter.")
 
         # 4. Education articles
         print("[*] Testing /api/education/articles...")
@@ -705,14 +720,23 @@ async def test_full_pipeline():
         tor_post_headers = {"X-CSRF-Token": tor_csrf_token}
         tor_admin_headers = {**headers, "X-CSRF-Token": tor_csrf_token}
 
-        # 17a. Verify Tor is disabled by default (non attiva a priori)
+        # 17a. Verify Tor is disabled by default and non-admins cannot see relay/circuit details or toggle Tor
         tor_def_res = await client.get("/api/tor/status")
         assert tor_def_res.status_code == 200
-        assert tor_def_res.json()["enabled"] is False, "Tor MUST be disabled by default!"
+        tor_def_json = tor_def_res.json()
+        assert tor_def_json["enabled"] is False, "Tor MUST be disabled by default!"
+        assert tor_def_json["circuit_id"] == "hidden", f"Expected redacted circuit_id for non-admin, got {tor_def_json}"
+        assert tor_def_json["socks_host"] == "hidden" and tor_def_json["socks_port"] == 0
         health_def_res = await client.get("/api/health")
         assert health_def_res.status_code == 200
         assert health_def_res.json()["tor_enabled"] is False
-        print("    -> Confirmed Tor proxy defaults to OFF (direct) at startup")
+        assert "tor_circuit_id" not in health_def_res.json(), "Public /api/health must not expose tor_circuit_id!"
+
+        unauth_cfg = await client.post("/api/tor/config", json={"enabled": True}, headers=tor_post_headers)
+        assert unauth_cfg.status_code == 401, f"Expected 401 for non-admin /api/tor/config, got {unauth_cfg.status_code}"
+        unauth_rot = await client.post("/api/tor/rotate", headers=tor_post_headers)
+        assert unauth_rot.status_code == 401, f"Expected 401 for non-admin /api/tor/rotate, got {unauth_rot.status_code}"
+        print("    -> Confirmed Tor defaults to OFF, non-admin status is redacted, and Tor toggles/rotations require Admin (401)")
 
         # Start mock target camera server (handles both HTTP image/portal & RTSP OPTIONS)
         target_hits = 0
@@ -885,32 +909,37 @@ async def test_full_pipeline():
                 ))
                 await db_sess.commit()
 
-            # 17b. Enable Tor pointing to mock SOCKS5 proxy
+            # 17b. Enable Tor pointing to mock SOCKS5 proxy (Admin Only)
             cfg_res = await client.post("/api/tor/config", json={
                 "enabled": True,
                 "auto_rotate": False,
                 "socks_host": "127.0.0.1",
                 "socks_port": mock_socks_port,
                 "control_port": 9051,
-            }, headers=tor_post_headers)
+            }, headers=tor_admin_headers)
             assert cfg_res.status_code == 200, f"Tor config enable failed: {cfg_res.text}"
             cfg_json = cfg_res.json()
             assert cfg_json["enabled"] is True and cfg_json["socks_alive"] is True
             gen_initial = cfg_json["circuit_generation"]
             cid_initial = cfg_json["circuit_id"]
 
-            # HTTP Stream proxy over SOCKS5
+            # Non-admin /api/tor/status still redacts circuit_id while Tor is active
+            pub_active_st = (await client.get("/api/tor/status")).json()
+            assert pub_active_st["enabled"] is True
+            assert pub_active_st["circuit_id"] == "hidden"
+
+            # HTTP Stream proxy over SOCKS5 (must NOT expose X-Tor-Circuit header)
             ev_count_before = len(socks_events)
             t_stream_res = await client.get("/api/proxy/stream", params={"url": f"http://127.0.0.1:{tor_cam_port}/cam.jpg"})
             assert t_stream_res.status_code == 200, f"Tor proxied /api/proxy/stream failed: {t_stream_res.text}"
             assert t_stream_res.headers.get("x-tor-routed") == "true"
-            assert t_stream_res.headers.get("x-tor-circuit") == cid_initial
+            assert "x-tor-circuit" not in t_stream_res.headers, "Stream proxy must not leak circuit/relay ID!"
             assert len(socks_events) > ev_count_before, "Expected /api/proxy/stream to traverse SOCKS5"
             first_socks_ev = socks_events[-1]
             assert first_socks_ev["host"] == "127.0.0.1" and first_socks_ev["port"] == tor_cam_port
             assert first_socks_ev["user"].startswith("wc_"), f"Expected IsolateSocksAuth username, got {first_socks_ev}"
 
-            # Isolated Web Portal gateway over SOCKS5
+            # Isolated Web Portal gateway over SOCKS5 (must NOT expose circuit/relay ID)
             ev_count_before = len(socks_events)
             t_web_res = await client.get(
                 "/api/proxy/web",
@@ -918,7 +947,9 @@ async def test_full_pipeline():
             )
             assert t_web_res.status_code == 200, f"Tor proxied /api/proxy/web failed: {t_web_res.text}"
             assert t_web_res.headers.get("x-tor-routed") == "true"
+            assert "x-tor-circuit" not in t_web_res.headers
             assert t_web_res.json().get("tor_routed") is True
+            assert t_web_res.json().get("tor_circuit_id") is None
             assert len(socks_events) > ev_count_before, "Expected /api/proxy/web to traverse SOCKS5"
 
             # RTSP prober over SOCKS5
@@ -941,7 +972,7 @@ async def test_full_pipeline():
             print("    -> HTTP stream, Web portal, RTSP prober, and RTSP bridge all routed via Tor SOCKS5 with IsolateSocksAuth")
 
             # 17c. Circuit rotation increments generation & rotates SOCKS5 IsolateSocksAuth credentials
-            rot_res = await client.post("/api/tor/rotate", headers=tor_post_headers)
+            rot_res = await client.post("/api/tor/rotate", headers=tor_admin_headers)
             assert rot_res.status_code == 200
             rot_json = rot_res.json()
             assert rot_json["circuit_generation"] > gen_initial
@@ -968,7 +999,7 @@ async def test_full_pipeline():
                 "socks_host": "127.0.0.1",
                 "socks_port": closed_socks_port,
                 "control_port": 9051,
-            }, headers=tor_post_headers)
+            }, headers=tor_admin_headers)
             assert fc_cfg.status_code == 200
             assert fc_cfg.json()["socks_alive"] is False
 

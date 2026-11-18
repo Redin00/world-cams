@@ -311,10 +311,7 @@ class TorProxyService:
             return
         raise HTTPException(
             status_code=503,
-            detail=(
-                f"Tor Proxy is enabled but SOCKS5 proxy at {self.socks_host}:{self.socks_port} "
-                "is unreachable (Fail-Closed Privacy Protection: direct camera connection blocked)."
-            )
+            detail="Tor Proxy is enabled but currently unreachable (Fail-Closed Privacy Protection)."
         )
 
     async def create_http_client(
@@ -374,10 +371,7 @@ class TorProxyService:
             else:
                 raise HTTPException(
                     status_code=503,
-                    detail=(
-                        f"Tor Proxy is enabled but SOCKS5 proxy at {self.socks_host}:{self.socks_port} "
-                        f"is unreachable ({e}). Fail-Closed Privacy Protection active."
-                    )
+                    detail="Tor Proxy is enabled but currently unreachable (Fail-Closed Privacy Protection)."
                 )
 
         try:

@@ -473,9 +473,10 @@ body.dark-theme {
 
 /* Panel 1: Camera Feeds Browser Sidebar */
 .panel-feed-browser {
+  position: relative;
   width: 360px;
-  min-width: 300px;
-  max-width: 420px;
+  min-width: 240px;
+  max-width: 60vw;
   background-color: var(--bg-secondary);
   border-right: 1px solid var(--border-subtle);
   display: flex;
@@ -483,6 +484,38 @@ body.dark-theme {
   overflow: hidden;
   flex-shrink: 0;
   z-index: 20;
+}
+
+.feeds-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 50;
+  background: transparent;
+  transition: background 0.15s;
+}
+.feeds-resize-handle:hover,
+body.resizing-feeds .feeds-resize-handle {
+  background: rgba(6, 182, 212, 0.55);
+}
+body.resizing-feeds {
+  cursor: ew-resize !important;
+  user-select: none !important;
+}
+body.resizing-feeds iframe {
+  pointer-events: none !important;
+}
+.app-container.view-grid .feeds-resize-handle,
+.app-container.feeds-hidden .feeds-resize-handle {
+  display: none;
+}
+@media (max-width: 900px) {
+  .feeds-resize-handle {
+    display: none;
+  }
 }
 
 .feed-browser-header {
@@ -961,9 +994,10 @@ body.dark-theme {
 
 /* Panel 3: Live Stream Player & Inspector */
 .panel-stream-inspector {
+  position: relative;
   width: 540px;
-  min-width: 460px;
-  max-width: 650px;
+  min-width: 340px;
+  max-width: 82vw;
   background-color: var(--bg-primary);
   border-left: 1px solid var(--border-subtle);
   display: flex;
@@ -971,6 +1005,37 @@ body.dark-theme {
   overflow-y: auto;
   flex-shrink: 0;
   z-index: 20;
+}
+
+.stream-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 50;
+  background: transparent;
+  transition: background 0.15s;
+}
+.stream-resize-handle:hover,
+body.resizing-stream .stream-resize-handle {
+  background: rgba(6, 182, 212, 0.55);
+}
+body.resizing-stream {
+  cursor: ew-resize !important;
+  user-select: none !important;
+}
+body.resizing-stream iframe {
+  pointer-events: none !important;
+}
+.app-container.view-player .stream-resize-handle {
+  display: none;
+}
+@media (max-width: 900px) {
+  .stream-resize-handle {
+    display: none;
+  }
 }
 
 .inspector-scroll-area {
@@ -1414,8 +1479,8 @@ body.dark-theme {
 .app-container.view-player .panel-feed-browser {
   display: flex;
   width: 320px;
-  min-width: 280px;
-  max-width: 360px;
+  min-width: 240px;
+  max-width: 60vw;
 }
 .app-container.view-player .panel-map-container {
   display: none !important;
@@ -1530,6 +1595,85 @@ body.dark-theme {
 }
 .app-container.view-grid .panel-stream-inspector {
   display: none;
+}
+
+/* External Sliding Handle for Discovered Cameras Sidebar */
+.btn-slide-feeds {
+  position: absolute;
+  left: 330px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 900;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-left: none;
+  color: var(--accent-cyan);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 0.75rem 0.22rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.45);
+  transition: background 0.15s, border-color 0.15s, padding 0.15s;
+}
+.btn-slide-feeds:hover {
+  background: rgba(6, 182, 212, 0.18);
+  border-color: rgba(6, 182, 212, 0.55);
+  padding-right: 0.38rem;
+}
+.btn-slide-feeds svg {
+  width: 15px;
+  height: 15px;
+}
+
+.app-container.view-triage .btn-slide-feeds {
+  left: 330px;
+}
+.app-container.view-map .btn-slide-feeds {
+  left: 380px;
+}
+.app-container.view-player .btn-slide-feeds {
+  left: 320px;
+}
+.app-container.feeds-hidden:not(.view-grid) .btn-slide-feeds {
+  left: 0 !important;
+  border-color: rgba(6, 182, 212, 0.5);
+}
+.app-container.view-grid .btn-slide-feeds {
+  display: none !important;
+}
+@media (max-width: 900px) {
+  .btn-slide-feeds {
+    display: none !important;
+  }
+}
+
+.app-container.feeds-hidden:not(.view-grid) .panel-feed-browser {
+  display: none !important;
+}
+
+.app-container.view-map.stream-open .panel-stream-inspector {
+  display: flex;
+  width: 480px;
+}
+
+.app-container.view-grid.stream-open .panel-feed-browser {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+.app-container.view-grid.stream-open .panel-stream-inspector {
+  display: flex;
+  width: 500px;
+}
+
+#btn-close-stream-panel {
+  display: none;
+}
+.app-container.view-map.stream-open #btn-close-stream-panel,
+.app-container.view-grid.stream-open #btn-close-stream-panel {
+  display: inline-flex;
 }
 
 /* ==========================================================================
@@ -2442,4 +2586,65 @@ body.dark-theme {
 
 .tor-status-strip code {
   color: #c084fc;
+}
+
+/* ==========================================================================
+   Introduction Modal
+   ========================================================================== */
+.modal-intro-dialog {
+  max-width: 640px;
+}
+
+.intro-lead {
+  font-size: 0.84rem;
+  color: var(--text-main);
+  line-height: 1.55;
+  margin: 0 0 1rem 0;
+}
+
+.intro-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.7rem;
+}
+
+.intro-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+}
+
+.intro-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  margin-bottom: 0.4rem;
+}
+
+.intro-card-head svg {
+  width: 14px;
+  height: 14px;
+}
+
+.intro-card p {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.intro-footer {
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .intro-grid {
+    grid-template-columns: 1fr;
+  }
 }

@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/css/styles.css?v=8801">
+  <link rel="stylesheet" href="/css/styles.css?v=8808">
 
   <!-- Scripts -->
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -48,7 +48,7 @@
         <span class="metric-label">UNAUTHENTICATED</span>
         <span class="metric-val" id="stat-unauth">--</span>
       </div>
-      <div class="metric-card" id="metric-favorites" style="cursor: pointer;" title="Filter Bookmarked / Favorite Cameras">
+      <div class="metric-card" id="metric-favorites" style="cursor: pointer; display: none;" title="Filter Bookmarked / Favorite Cameras (Admin Only)">
         <span class="metric-label">FAVORITES</span>
         <span class="metric-val" id="stat-favorites" style="color: var(--accent-amber);">0</span>
       </div>
@@ -64,7 +64,7 @@
         <span class="metric-label">ADMIN PRIVILEGES</span>
         <span class="metric-badge" id="stat-admin" style="color: var(--accent-rose); font-weight: 700;"><i data-lucide="lock" style="width: 11px; height: 11px; vertical-align: middle;"></i> LOCKED</span>
       </div>
-      <div class="metric-card" id="metric-tor" style="cursor: pointer;" title="Tor Anonymizer Proxy (Disabled by default — click to toggle)">
+      <div class="metric-card" id="metric-tor" style="cursor: pointer;" title="Tor Anonymizer Proxy (Admin Only — click to toggle)">
         <span class="metric-label">TOR PRIVACY PROXY</span>
         <span class="metric-badge" id="stat-tor" style="color: var(--text-muted); font-weight: 700;"><i data-lucide="shield-off" style="width: 11px; height: 11px; vertical-align: middle;"></i> OFF (DIRECT)</span>
       </div>
@@ -136,8 +136,8 @@
         </select>
       </div>
 
-      <!-- Quick Favorites Filter Toggle -->
-      <button type="button" class="btn btn-outline" id="btn-filter-favorites" title="Show only bookmarked / favorite cameras">
+      <!-- Quick Favorites Filter Toggle (Admin Only) -->
+      <button type="button" class="btn btn-outline" id="btn-filter-favorites" style="display: none;" title="Show only bookmarked / favorite cameras (Admin Only)">
         <i data-lucide="bookmark"></i> Favorites (<span id="fav-filter-count">0</span>)
       </button>
 
@@ -156,10 +156,10 @@
       <button class="view-btn active" data-view="triage" title="3-Column SOC Triage View (Feeds + Map + Player)">
         <i data-lucide="columns"></i>
       </button>
-      <button class="view-btn" data-view="map" title="Map & Feeds View">
+      <button class="view-btn" data-view="map" title="Map &amp; Feeds View">
         <i data-lucide="map"></i>
       </button>
-      <button class="view-btn" data-view="player" title="Stream Inspector & Feeds">
+      <button class="view-btn" data-view="player" title="Stream Inspector &amp; Feeds">
         <i data-lucide="video"></i>
       </button>
       <button class="view-btn" data-view="grid" title="Full Grid Cards View">
@@ -174,6 +174,7 @@
   <main class="app-container view-triage" id="app-workspace">
     <!-- PANEL 1: Dedicated Camera Feeds Browser Sidebar -->
     <aside class="panel panel-feed-browser" id="feed-browser-panel">
+      <div class="feeds-resize-handle" id="feeds-resize-handle" title="Drag to resize Discovered Cameras (double-click to reset)"></div>
       <div class="feed-browser-header">
         <div class="feed-header-title">
           <i data-lucide="list" class="inline-icon"></i>
@@ -192,7 +193,7 @@
         <button type="button" class="feed-cat-tab active" id="tab-feeds-all" data-fav-filter="all">
           <i data-lucide="video"></i> All Cams (<span id="tab-count-all">0</span>)
         </button>
-        <button type="button" class="feed-cat-tab" id="tab-feeds-fav" data-fav-filter="favorites">
+        <button type="button" class="feed-cat-tab" id="tab-feeds-fav" data-fav-filter="favorites" style="display: none;">
           <i data-lucide="bookmark"></i> Favorites (<span id="tab-count-fav">0</span>)
         </button>
       </div>
@@ -216,6 +217,10 @@
       </div>
     </aside>
 
+    <button type="button" class="btn-slide-feeds" id="btn-slide-feeds-panel" title="Hide Discovered Cameras">
+      <i data-lucide="chevrons-left"></i>
+    </button>
+
     <!-- PANEL 2: Global Interactive Threat Map -->
     <section class="panel panel-map-container" id="map-panel">
       <div class="map-controls">
@@ -229,6 +234,7 @@
 
     <!-- PANEL 3: Live Stream Player & Security Inspector -->
     <aside class="panel panel-stream-inspector" id="stream-panel">
+      <div class="stream-resize-handle" id="stream-resize-handle" title="Drag to resize camera output (double-click to reset)"></div>
       <!-- Mobile Quick Return Bar -->
       <div class="mobile-player-topbar" id="mobile-player-topbar">
         <button type="button" class="btn btn-sm btn-outline" id="btn-mobile-back-to-feeds">
@@ -246,7 +252,7 @@
               <h3 id="player-feed-title">Select a camera to view</h3>
             </div>
             <div class="player-controls-right">
-              <button class="btn-icon" id="btn-player-tor-toggle" title="Toggle Tor Anonymizer Proxy (Off by default)">
+              <button class="btn-icon" id="btn-player-tor-toggle" title="Toggle Tor Anonymizer Proxy (Admin Only)" style="display: none;">
                 <i data-lucide="shield-off"></i>
               </button>
               <button class="btn-icon" id="btn-player-tor-rotate" title="Rotate Tor Exit Circuit (New IP)" style="display: none;">
@@ -258,7 +264,7 @@
               <a class="btn-icon text-accent" id="btn-open-web-cam" target="_blank" rel="noopener noreferrer" title="Open Camera Web GUI in New Tab" style="display: none;">
                 <i data-lucide="external-link"></i>
               </a>
-              <button class="btn-icon" id="btn-toggle-favorite" title="Bookmark camera">
+              <button class="btn-icon" id="btn-toggle-favorite" title="Bookmark camera (Admin Only)" style="display: none;">
                 <i data-lucide="bookmark"></i>
               </button>
               <button class="btn-icon text-danger" id="btn-delete-feed" title="Delete camera from database (Admin Only)">
@@ -266,6 +272,9 @@
               </button>
               <button class="btn-icon" id="btn-fullscreen-player" title="Fullscreen">
                 <i data-lucide="maximize-2"></i>
+              </button>
+              <button class="btn-icon" id="btn-close-stream-panel" title="Close Camera Output">
+                <i data-lucide="x"></i>
               </button>
             </div>
           </div>
@@ -544,41 +553,46 @@
 
         <div class="tor-settings-box" id="settings-tor-section">
           <div class="tor-settings-header">
-            <label><i data-lucide="shield" style="width: 14px; height: 14px; color: #c084fc;"></i> Tor Anonymizer &amp; Circuit Rotation (Opt-in)</label>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-modal-tor-rotate" title="Request new Tor exit circuit (NEWNYM)">
+            <label><i data-lucide="shield" style="width: 14px; height: 14px; color: #c084fc;"></i> Tor Anonymizer &amp; Circuit Rotation (Admin Only)</label>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-modal-tor-rotate" title="Request new Tor exit circuit (NEWNYM)" style="display: none;">
               <i data-lucide="refresh-cw" style="width: 12px; height: 12px;"></i> Rotate Exit
             </button>
           </div>
-          <div class="tor-toggle-row">
-            <label class="tor-checkbox-label" for="setting-tor-enabled">
-              <input type="checkbox" id="setting-tor-enabled">
-              Enable Tor SOCKS5 Proxy (Disabled by default, Fail-Closed)
-            </label>
-            <label class="tor-checkbox-label" for="setting-tor-autorotate">
-              <input type="checkbox" id="setting-tor-autorotate" checked>
-              Auto-rotate circuit per camera stream
-            </label>
+          <div id="settings-tor-locked-msg" style="font-size: 0.76rem; color: var(--text-muted); padding: 0.35rem 0;">
+            Administrator Access Key required to enable/disable Tor routing or view relay/circuit telemetry.
           </div>
-          <div class="tor-grid">
-            <div>
-              <label for="setting-tor-host">SOCKS5 Host</label>
-              <input type="text" id="setting-tor-host" class="form-control font-mono" value="127.0.0.1" placeholder="127.0.0.1">
+          <div id="settings-tor-admin-fields" style="display: none;">
+            <div class="tor-toggle-row">
+              <label class="tor-checkbox-label" for="setting-tor-enabled">
+                <input type="checkbox" id="setting-tor-enabled">
+                Enable Tor SOCKS5 Proxy (Disabled by default, Fail-Closed)
+              </label>
+              <label class="tor-checkbox-label" for="setting-tor-autorotate">
+                <input type="checkbox" id="setting-tor-autorotate" checked>
+                Auto-rotate circuit per camera stream
+              </label>
             </div>
-            <div>
-              <label for="setting-tor-port">SOCKS5 Port</label>
-              <input type="number" id="setting-tor-port" class="form-control font-mono" value="9050" min="1" max="65535">
+            <div class="tor-grid">
+              <div>
+                <label for="setting-tor-host">SOCKS5 Host</label>
+                <input type="text" id="setting-tor-host" class="form-control font-mono" value="127.0.0.1" placeholder="127.0.0.1">
+              </div>
+              <div>
+                <label for="setting-tor-port">SOCKS5 Port</label>
+                <input type="number" id="setting-tor-port" class="form-control font-mono" value="9050" min="1" max="65535">
+              </div>
+              <div>
+                <label for="setting-tor-ctrl-port">ControlPort</label>
+                <input type="number" id="setting-tor-ctrl-port" class="form-control font-mono" value="9051" min="1" max="65535">
+              </div>
             </div>
-            <div>
-              <label for="setting-tor-ctrl-port">ControlPort</label>
-              <input type="number" id="setting-tor-ctrl-port" class="form-control font-mono" value="9051" min="1" max="65535">
+            <div class="tor-status-strip">
+              <span>Daemon: <strong id="tor-status-summary">OFF (DIRECT)</strong></span>
+              <span>Circuit: <code id="tor-circuit-label">none</code></span>
+              <span>Exit IP: <code id="tor-exit-ip-label">-</code></span>
             </div>
+            <small class="form-hint" style="display: block; margin-top: 0.45rem;">Requires a local Tor SOCKS5 daemon (port 9050) or Tor Browser (port 9150). If enabled while unreachable, connections fail closed (HTTP 503) to prevent IP leaks.</small>
           </div>
-          <div class="tor-status-strip">
-            <span>Daemon: <strong id="tor-status-summary">OFF (DIRECT)</strong></span>
-            <span>Circuit: <code id="tor-circuit-label">none</code></span>
-            <span>Exit IP: <code id="tor-exit-ip-label">-</code></span>
-          </div>
-          <small class="form-hint" style="display: block; margin-top: 0.45rem;">Requires a local Tor SOCKS5 daemon (port 9050) or Tor Browser (port 9150). If enabled while unreachable, connections fail closed (HTTP 503) to prevent IP leaks.</small>
         </div>
 
         <div class="form-group" style="margin-top: 1.5rem;">
@@ -603,6 +617,60 @@
         <button class="btn btn-primary" id="btn-save-settings">
           <i data-lucide="save"></i> Save Settings
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==========================================
+       MODAL 4: Website Introduction Modal
+       ========================================== -->
+  <div class="modal-backdrop" id="modal-intro">
+    <div class="modal-dialog modal-intro-dialog">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i data-lucide="shield-check" class="modal-icon" style="color: var(--accent-cyan);"></i>
+          <div>
+            <h3>Welcome to WorldCams</h3>
+            <p>Exposed Camera Intelligence &amp; Security Awareness Platform</p>
+          </div>
+        </div>
+        <button class="btn-close" data-modal="modal-intro">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <p class="intro-lead">
+          <strong>WorldCams</strong> maps and audits internet-exposed surveillance cameras discovered via OSINT, bridging RTSP and HTTP/MJPEG feeds while isolating untrusted web portals.
+        </p>
+
+        <div class="intro-grid">
+          <div class="intro-card">
+            <div class="intro-card-head"><i data-lucide="globe"></i> Global Feed Explorer</div>
+            <p>Filter cameras by country, vendor, port, or organization, inspect live telemetry, and navigate targets on the interactive world map.</p>
+          </div>
+          <div class="intro-card">
+            <div class="intro-card-head"><i data-lucide="shield"></i> Anti-Honeypot Isolation</div>
+            <p>All camera streams and web portals are proxied server-side in a zero-JS sandbox so untrusted devices never touch your browser directly.</p>
+          </div>
+          <div class="intro-card">
+            <div class="intro-card-head"><i data-lucide="book-open"></i> Defensive Awareness</div>
+            <p>Designed strictly for authorized security research, exposure assessment, and learning how to harden vulnerable IoT/CCTV deployments.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer intro-footer">
+        <label class="tor-checkbox-label" for="intro-dont-show">
+          <input type="checkbox" id="intro-dont-show">
+          Don't show this again
+        </label>
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn btn-secondary" id="btn-intro-education">
+            <i data-lucide="shield-alert"></i> Awareness Guides
+          </button>
+          <button class="btn btn-primary" id="btn-close-intro" data-modal="modal-intro">
+            <i data-lucide="compass"></i> Explore Dashboard
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -634,6 +702,6 @@
   <script src="/js/player.js?v=8800"></script>
   <script src="/js/map.js?v=8800"></script>
   <script src="/js/education.js?v=8800"></script>
-  <script src="/js/app.js?v=8800"></script>
+  <script src="/js/app.js?v=8811"></script>
 </body>
 </html>

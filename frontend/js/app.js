@@ -181,6 +181,24 @@ class AppController {
       });
     });
 
+    // External sliding handle for Discovered Cameras sidebar
+    document.getElementById('btn-slide-feeds-panel')?.addEventListener('click', () => {
+      this.toggleFeedsPanel();
+    });
+
+    // Resizable Camera Output Panel & Discovered Cameras Sidebar
+    this.initStreamPanelResize();
+    this.initFeedsPanelResize();
+
+    // Close stream panel in Map/Grid views
+    document.getElementById('btn-close-stream-panel')?.addEventListener('click', () => {
+      this.streamOpen = false;
+      this.workspace?.classList.remove('stream-open');
+      if (window.worldMap) {
+        setTimeout(() => window.worldMap.invalidateSize(), 60);
+      }
+    });
+
     // Inspector Tab Switching
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -209,8 +227,10 @@ class AppController {
     
     // Protect Settings behind Admin Privileges
     document.getElementById('btn-open-settings')?.addEventListener('click', () => {
-      this.loadSettings();
-      this.openModal('modal-settings');
+      this.requireAdmin(() => {
+        this.loadSettings();
+        this.openModal('modal-settings');
+      });
     });
 
     // Toggle Admin Status Badge in Navbar
@@ -236,8 +256,19 @@ class AppController {
     document.querySelectorAll('[data-modal]').forEach(el => {
       el.addEventListener('click', () => {
         const modalId = el.dataset.modal;
+        if (modalId === 'modal-intro' && document.getElementById('intro-dont-show')?.checked) {
+          localStorage.setItem('worldcams_hide_intro', '1');
+        }
         this.closeModal(modalId);
       });
+    });
+
+    document.getElementById('btn-intro-education')?.addEventListener('click', () => {
+      if (document.getElementById('intro-dont-show')?.checked) {
+        localStorage.setItem('worldcams_hide_intro', '1');
+      }
+      this.closeModal('modal-intro');
+      this.openModal('modal-education');
     });
 
     // Quick tag pills in Shodan modal
@@ -349,15 +380,191 @@ class AppController {
     await this.loadTorStatus();
     await this.loadFacets();
     await this.loadFeeds();
+    if (localStorage.getItem('worldcams_hide_intro') !== '1') {
+      this.openModal('modal-intro');
+    }
     lucide.createIcons();
   }
 
   setViewMode(mode) {
     this.currentViewMode = mode;
     const mobileClass = `mobile-tab-${this.currentMobileTab || 'feeds'}`;
-    this.workspace.className = `app-container view-${mode} ${mobileClass}`;
+    const feedsHiddenClass = this.feedsHidden ? 'feeds-hidden' : '';
+    const streamOpenClass = this.streamOpen ? 'stream-open' : '';
+    this.workspace.className = `app-container view-${mode} ${mobileClass} ${feedsHiddenClass} ${streamOpenClass}`.trim();
+
+    const streamPanel = document.getElementById('stream-panel');
+    if (streamPanel) {
+      if (mode === 'player') {
+        streamPanel.style.width = '';
+      } else {
+        const savedW = localStorage.getItem('worldcams_stream_width');
+        if (savedW) streamPanel.style.width = `${savedW}px`;
+      }
+    }
+
+    const feedsPanel = document.getElementById('feed-browser-panel');
+    const slideBtn = document.getElementById('btn-slide-feeds-panel');
+    if (feedsPanel) {
+      if (mode === 'grid') {
+        feedsPanel.style.width = '';
+        if (slideBtn) slideBtn.style.left = '';
+      } else {
+        const savedFW = localStorage.getItem('worldcams_feeds_width');
+        if (savedFW && !this.feedsHidden) {
+          feedsPanel.style.width = `${savedFW}px`;
+          if (slideBtn) slideBtn.style.left = `${savedFW}px`;
+        } else {
+          feedsPanel.style.width = '';
+          if (slideBtn) slideBtn.style.left = '';
+        }
+      }
+    }
+
     if (window.worldMap) {
-      window.worldMap.invalidateSize();
+      setTimeout(() => window.worldMap.invalidateSize(), 60);
+    }
+  }
+
+  initFeedsPanelResize() {
+    const handle = document.getElementById('feeds-resize-handle');
+    const panel = document.getElementById('feed-browser-panel');
+    const slideBtn = document.getElementById('btn-slide-feeds-panel');
+    if (!handle || !panel) return;
+
+    const savedW = localStorage.getItem('worldcams_feeds_width');
+    if (savedW && this.currentViewMode !== 'grid' && !this.feedsHidden && window.innerWidth > 900) {
+      panel.style.width = `${savedW}px`;
+      if (slideBtn) slideBtn.style.left = `${savedW}px`;
+    }
+
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    handle.addEventListener('mousedown', (e) => {
+      if (window.innerWidth <= 900 || this.currentViewMode === 'grid' || this.feedsHidden) return;
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = panel.getBoundingClientRect().width;
+      document.body.classList.add('resizing-feeds');
+      e.preventDefault();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const minW = 240;
+      const maxW = Math.floor(window.innerWidth * 0.60);
+      const nextW = Math.round(Math.max(minW, Math.min(maxW, startWidth + (e.clientX - startX))));
+      panel.style.width = `${nextW}px`;
+      if (slideBtn) slideBtn.style.left = `${nextW}px`;
+      if (window.worldMap) {
+        window.worldMap.invalidateSize();
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (!isResizing) return;
+      isResizing = false;
+      document.body.classList.remove('resizing-feeds');
+      const finalW = Math.round(panel.getBoundingClientRect().width);
+      if (finalW >= 240) {
+        localStorage.setItem('worldcams_feeds_width', String(finalW));
+      }
+      if (window.worldMap) {
+        window.worldMap.invalidateSize();
+      }
+    });
+
+    handle.addEventListener('dblclick', () => {
+      panel.style.width = '';
+      if (slideBtn) slideBtn.style.left = '';
+      localStorage.removeItem('worldcams_feeds_width');
+      if (window.worldMap) {
+        setTimeout(() => window.worldMap.invalidateSize(), 60);
+      }
+    });
+  }
+
+  initStreamPanelResize() {
+    const handle = document.getElementById('stream-resize-handle');
+    const panel = document.getElementById('stream-panel');
+    if (!handle || !panel) return;
+
+    const savedW = localStorage.getItem('worldcams_stream_width');
+    if (savedW && this.currentViewMode !== 'player' && window.innerWidth > 900) {
+      panel.style.width = `${savedW}px`;
+    }
+
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    handle.addEventListener('mousedown', (e) => {
+      if (window.innerWidth <= 900 || this.currentViewMode === 'player') return;
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = panel.getBoundingClientRect().width;
+      document.body.classList.add('resizing-stream');
+      e.preventDefault();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const minW = 340;
+      const maxW = Math.floor(window.innerWidth * 0.82);
+      const nextW = Math.max(minW, Math.min(maxW, startWidth + (startX - e.clientX)));
+      panel.style.width = `${Math.round(nextW)}px`;
+      if (window.worldMap) {
+        window.worldMap.invalidateSize();
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (!isResizing) return;
+      isResizing = false;
+      document.body.classList.remove('resizing-stream');
+      const finalW = Math.round(panel.getBoundingClientRect().width);
+      if (finalW >= 340) {
+        localStorage.setItem('worldcams_stream_width', String(finalW));
+      }
+      if (window.worldMap) {
+        window.worldMap.invalidateSize();
+      }
+    });
+
+    handle.addEventListener('dblclick', () => {
+      panel.style.width = '';
+      localStorage.removeItem('worldcams_stream_width');
+      if (window.worldMap) {
+        setTimeout(() => window.worldMap.invalidateSize(), 60);
+      }
+    });
+  }
+
+  toggleFeedsPanel() {
+    this.feedsHidden = !this.feedsHidden;
+    this.workspace?.classList.toggle('feeds-hidden', this.feedsHidden);
+    const feedsPanel = document.getElementById('feed-browser-panel');
+    const btn = document.getElementById('btn-slide-feeds-panel');
+    if (!this.feedsHidden && feedsPanel && this.currentViewMode !== 'grid') {
+      const savedFW = localStorage.getItem('worldcams_feeds_width');
+      if (savedFW) {
+        feedsPanel.style.width = `${savedFW}px`;
+        if (btn) btn.style.left = `${savedFW}px`;
+      }
+    }
+    if (btn) {
+      btn.innerHTML = this.feedsHidden
+        ? '<i data-lucide="chevrons-right"></i>'
+        : '<i data-lucide="chevrons-left"></i>';
+      btn.title = this.feedsHidden ? 'Show Discovered Cameras' : 'Hide Discovered Cameras';
+    }
+    if (window.lucide) {
+      lucide.createIcons();
+    }
+    if (window.worldMap) {
+      setTimeout(() => window.worldMap.invalidateSize(), 60);
     }
   }
 
@@ -381,6 +588,18 @@ class AppController {
   }
 
   setFavoritesFilter(enableFav) {
+    if (enableFav && !this.isAdminAuthorized) {
+      this.requireAdmin(() => {
+        this.currentFilters.is_favorite = true;
+        this.updateFavoritesUIState();
+        this.loadFacets();
+        this.loadFeeds();
+        if (window.worldMap) {
+          window.worldMap.recenter();
+        }
+      });
+      return;
+    }
     if (enableFav) {
       this.currentFilters.is_favorite = true;
     } else {
@@ -453,14 +672,29 @@ class AppController {
   }
 
   updateAdminUI(isAuthorized) {
-    if (!this.statAdmin) return;
-    if (isAuthorized) {
-      this.statAdmin.innerHTML = '<i data-lucide="unlock" style="width:11px;height:11px;vertical-align:middle;"></i> UNLOCKED';
-      this.statAdmin.style.color = 'var(--accent-emerald)';
-    } else {
-      this.statAdmin.innerHTML = '<i data-lucide="lock" style="width:11px;height:11px;vertical-align:middle;"></i> LOCKED';
-      this.statAdmin.style.color = 'var(--accent-rose)';
+    if (this.statAdmin) {
+      if (isAuthorized) {
+        this.statAdmin.innerHTML = '<i data-lucide="unlock" style="width:11px;height:11px;vertical-align:middle;"></i> UNLOCKED';
+        this.statAdmin.style.color = 'var(--accent-emerald)';
+      } else {
+        this.statAdmin.innerHTML = '<i data-lucide="lock" style="width:11px;height:11px;vertical-align:middle;"></i> LOCKED';
+        this.statAdmin.style.color = 'var(--accent-rose)';
+      }
     }
+
+    const showFavs = Boolean(isAuthorized);
+    if (this.metricFavorites) this.metricFavorites.style.display = showFavs ? 'flex' : 'none';
+    if (this.btnFilterFavorites) this.btnFilterFavorites.style.display = showFavs ? 'inline-flex' : 'none';
+    if (this.tabFeedsFav) this.tabFeedsFav.style.display = showFavs ? 'flex' : 'none';
+    const playerFavBtn = document.getElementById('btn-toggle-favorite');
+    if (playerFavBtn) playerFavBtn.style.display = showFavs ? 'inline-flex' : 'none';
+
+    if (!showFavs && this.currentFilters && this.currentFilters.is_favorite !== null) {
+      this.currentFilters.is_favorite = null;
+      this.updateFavoritesUIState();
+    }
+
+    this.updateTorUI(this.torStatus);
     lucide.createIcons();
   }
 
@@ -501,11 +735,17 @@ class AppController {
         localStorage.setItem('worldcams_admin_token', trimmed);
         this.isAdminAuthorized = true;
         this.updateAdminUI(true);
+        await this.loadTorStatus(false);
+        await this.loadFacets();
+        await this.loadFeeds();
         alert('Admin privileges verified and unlocked successfully.');
       } else {
         localStorage.removeItem('worldcams_admin_token');
         this.isAdminAuthorized = false;
         this.updateAdminUI(false);
+        await this.loadTorStatus(false);
+        await this.loadFacets();
+        await this.loadFeeds();
         alert('Invalid Admin Key. Privileges locked.');
       }
     }
@@ -556,16 +796,18 @@ class AppController {
     const esc = window.escapeHtml || (s => String(s ?? ''));
     const enabled = Boolean(this.torStatus.enabled);
     const alive = Boolean(this.torStatus.socks_alive);
-    const circuit = this.torStatus.circuit_id || (enabled ? 'init' : 'direct');
+    const isAdmin = Boolean(this.isAdminAuthorized);
+    const circuit = isAdmin ? (this.torStatus.circuit_id || (enabled ? 'init' : 'direct')) : '';
 
     if (this.metricTor && this.statTor) {
       this.metricTor.classList.toggle('tor-on', enabled && alive);
       this.metricTor.classList.toggle('tor-error', enabled && !alive);
       if (enabled && alive) {
-        this.statTor.innerHTML = `<i data-lucide="shield-check" style="width: 11px; height: 11px; vertical-align: middle;"></i> ON // ${esc(circuit)}`;
+        const label = isAdmin && circuit && circuit !== 'hidden' ? `ON // ${esc(circuit)}` : 'ON (PROTECTED)';
+        this.statTor.innerHTML = `<i data-lucide="shield-check" style="width: 11px; height: 11px; vertical-align: middle;"></i> ${label}`;
         this.statTor.style.color = '#c084fc';
       } else if (enabled && !alive) {
-        this.statTor.innerHTML = '<i data-lucide="shield-alert" style="width: 11px; height: 11px; vertical-align: middle;"></i> ON // SOCKS5 OFFLINE';
+        this.statTor.innerHTML = '<i data-lucide="shield-alert" style="width: 11px; height: 11px; vertical-align: middle;"></i> ON // OFFLINE';
         this.statTor.style.color = 'var(--accent-rose)';
       } else {
         this.statTor.innerHTML = '<i data-lucide="shield-off" style="width: 11px; height: 11px; vertical-align: middle;"></i> OFF (DIRECT)';
@@ -574,19 +816,26 @@ class AppController {
     }
 
     if (this.btnPlayerTorToggle) {
+      this.btnPlayerTorToggle.style.display = isAdmin ? 'inline-flex' : 'none';
       this.btnPlayerTorToggle.classList.toggle('tor-active', enabled && alive);
       this.btnPlayerTorToggle.classList.toggle('tor-error', enabled && !alive);
       this.btnPlayerTorToggle.innerHTML = enabled
         ? (alive ? '<i data-lucide="shield-check"></i>' : '<i data-lucide="shield-alert"></i>')
         : '<i data-lucide="shield-off"></i>';
       this.btnPlayerTorToggle.title = enabled
-        ? (alive ? `Tor Active (${circuit}) — Click to disable` : 'Tor Enabled but SOCKS5 Offline (Fail-Closed) — Click to disable')
-        : 'Tor Proxy OFF (Direct) — Click to enable';
+        ? (alive ? `Tor Active (${circuit}) — Click to disable (Admin)` : 'Tor Enabled but Offline — Click to disable (Admin)')
+        : 'Tor Proxy OFF (Direct) — Click to enable (Admin)';
     }
 
     if (this.btnPlayerTorRotate) {
-      this.btnPlayerTorRotate.style.display = enabled ? 'inline-flex' : 'none';
+      this.btnPlayerTorRotate.style.display = (isAdmin && enabled) ? 'inline-flex' : 'none';
     }
+
+    const adminFieldsEl = document.getElementById('settings-tor-admin-fields');
+    const lockedMsgEl = document.getElementById('settings-tor-locked-msg');
+    if (adminFieldsEl) adminFieldsEl.style.display = isAdmin ? 'block' : 'none';
+    if (lockedMsgEl) lockedMsgEl.style.display = isAdmin ? 'none' : 'block';
+    if (this.btnModalTorRotate) this.btnModalTorRotate.style.display = isAdmin ? 'inline-flex' : 'none';
 
     const summaryEl = document.getElementById('tor-status-summary');
     const circuitEl = document.getElementById('tor-circuit-label');
@@ -599,8 +848,8 @@ class AppController {
         ? (alive ? '#c084fc' : 'var(--accent-rose)')
         : 'var(--text-muted)';
     }
-    if (circuitEl) circuitEl.textContent = enabled ? circuit : 'none';
-    if (exitIpEl) exitIpEl.textContent = this.torStatus.exit_ip || '-';
+    if (circuitEl) circuitEl.textContent = (isAdmin && enabled) ? circuit : 'none';
+    if (exitIpEl) exitIpEl.textContent = (isAdmin && this.torStatus.exit_ip) ? this.torStatus.exit_ip : '-';
 
     if (window.lucide) {
       lucide.createIcons();
@@ -609,7 +858,9 @@ class AppController {
 
   async loadTorStatus(verifyIp = false) {
     try {
-      const res = await fetch(`/api/tor/status?verify_ip=${verifyIp ? 'true' : 'false'}`);
+      const token = this.getAdminToken();
+      const headers = token ? { 'X-Admin-Token': token } : {};
+      const res = await fetch(`/api/tor/status?verify_ip=${verifyIp ? 'true' : 'false'}`, { headers });
       if (res.ok) {
         const st = await res.json();
         this.updateTorUI(st);
@@ -622,50 +873,67 @@ class AppController {
   }
 
   async toggleTorProxy() {
-    const targetEnabled = !(this.torStatus && this.torStatus.enabled);
-    try {
-      const res = await fetch('/api/tor/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: targetEnabled })
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        alert(`Tor configuration error: ${err.detail || res.statusText}`);
-        return;
-      }
-      const st = await res.json();
-      this.updateTorUI(st);
-      if (this.selectedFeed && window.streamPlayer && (!st.enabled || st.socks_alive)) {
-        window.streamPlayer.playFeed(this.selectedFeed);
-      }
-    } catch (e) {
-      alert('Failed to toggle Tor proxy: ' + e.message);
-    }
-  }
-
-  async rotateTorCircuit() {
-    const btns = [this.btnPlayerTorRotate, this.btnModalTorRotate].filter(Boolean);
-    btns.forEach(b => { b.disabled = true; });
-    try {
-      const res = await fetch('/api/tor/rotate?verify_ip=true', { method: 'POST' });
-      if (res.ok) {
+    this.requireAdmin(async (token) => {
+      const targetEnabled = !(this.torStatus && this.torStatus.enabled);
+      try {
+        const res = await fetch('/api/tor/config', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Admin-Token': token
+          },
+          body: JSON.stringify({ enabled: targetEnabled })
+        });
+        if (res.status === 401) {
+          alert('ACCESS DENIED: Valid Administrator Access Key required to toggle Tor proxy.');
+          this.promptAdminAuth();
+          return;
+        }
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(`Tor configuration error: ${err.detail || res.statusText}`);
+          return;
+        }
         const st = await res.json();
         this.updateTorUI(st);
         if (this.selectedFeed && window.streamPlayer && (!st.enabled || st.socks_alive)) {
           window.streamPlayer.playFeed(this.selectedFeed);
         }
+      } catch (e) {
+        alert('Failed to toggle Tor proxy: ' + e.message);
       }
-    } catch (e) {
-      console.warn('Tor circuit rotation error:', e);
-    } finally {
-      btns.forEach(b => { b.disabled = false; });
-    }
+    });
+  }
+
+  async rotateTorCircuit() {
+    this.requireAdmin(async (token) => {
+      const btns = [this.btnPlayerTorRotate, this.btnModalTorRotate].filter(Boolean);
+      btns.forEach(b => { b.disabled = true; });
+      try {
+        const res = await fetch('/api/tor/rotate?verify_ip=true', {
+          method: 'POST',
+          headers: { 'X-Admin-Token': token }
+        });
+        if (res.ok) {
+          const st = await res.json();
+          this.updateTorUI(st);
+          if (this.selectedFeed && window.streamPlayer && (!st.enabled || st.socks_alive)) {
+            window.streamPlayer.playFeed(this.selectedFeed);
+          }
+        }
+      } catch (e) {
+        console.warn('Tor circuit rotation error:', e);
+      } finally {
+        btns.forEach(b => { b.disabled = false; });
+      }
+    });
   }
 
   async loadFacets() {
     try {
-      const res = await fetch('/api/facets');
+      const token = this.getAdminToken();
+      const headers = token ? { 'X-Admin-Token': token } : {};
+      const res = await fetch('/api/facets', { headers });
       if (res.ok) {
         const facets = await res.json();
         
@@ -766,7 +1034,9 @@ class AppController {
     params.append('limit', '25000');
 
     try {
-      const res = await fetch(`/api/feeds?${params.toString()}`);
+      const token = this.getAdminToken();
+      const headers = token ? { 'X-Admin-Token': token } : {};
+      const res = await fetch(`/api/feeds?${params.toString()}`, { headers });
       if (res.ok) {
         const data = await res.json();
         this.feeds = data.items || [];
@@ -889,10 +1159,10 @@ class AppController {
           <input type="checkbox" class="card-checkbox" data-id="${safeId}" ${isBatchSelected ? 'checked' : ''}>
         </div>
 
-        <!-- Quick Favorite Button -->
-        <button class="card-quick-fav ${feed.is_favorite ? 'favorited' : ''}" data-id="${safeId}" title="${feed.is_favorite ? 'Remove from favorites' : 'Add to favorites'}">
+        ${this.isAdminAuthorized ? `<!-- Quick Favorite Button (Admin Only) -->
+        <button class="card-quick-fav ${feed.is_favorite ? 'favorited' : ''}" data-id="${safeId}" title="${feed.is_favorite ? 'Remove from favorites (Admin Only)' : 'Add to favorites (Admin Only)'}">
           <i data-lucide="bookmark" style="width:11px;height:11px;"></i>
-        </button>
+        </button>` : ''}
 
         <!-- Quick Delete Button (Admin) -->
         <button class="card-quick-del" data-id="${safeId}" title="Permanently delete camera (Admin)">
@@ -980,6 +1250,15 @@ class AppController {
   selectFeed(feed, autoSwitchMobile = true) {
     this.selectedFeed = feed;
 
+    // Ensure stream inspector output is shown in every layout (including Map & Grid views)
+    if (autoSwitchMobile) {
+      this.streamOpen = true;
+      this.workspace?.classList.add('stream-open');
+      if (window.worldMap) {
+        setTimeout(() => window.worldMap.invalidateSize(), 60);
+      }
+    }
+
     // Update active state in grid cards
     document.querySelectorAll('.feed-card').forEach(c => c.classList.remove('active'));
     this.renderFeedGrid();
@@ -1057,36 +1336,47 @@ class AppController {
 
   async toggleFavoriteFeed(feed) {
     if (!feed) return;
-    const newStatus = !feed.is_favorite;
 
-    try {
-      const res = await fetch(`/api/feeds/${feed.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_favorite: newStatus })
-      });
-      if (res.ok) {
-        feed.is_favorite = newStatus;
-        if (this.selectedFeed && this.selectedFeed.id === feed.id) {
-          this.selectedFeed.is_favorite = newStatus;
-          const favBtn = document.getElementById('btn-toggle-favorite');
-          if (favBtn) {
-            favBtn.style.color = newStatus ? 'var(--accent-amber)' : 'var(--text-muted)';
+    this.requireAdmin(async (token) => {
+      const newStatus = !feed.is_favorite;
+
+      try {
+        const res = await fetch(`/api/feeds/${feed.id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Admin-Token': token
+          },
+          body: JSON.stringify({ is_favorite: newStatus })
+        });
+        if (res.status === 401) {
+          alert('ACCESS DENIED: Invalid Administrator Access Key.');
+          this.promptAdminAuth();
+          return;
+        }
+        if (res.ok) {
+          feed.is_favorite = newStatus;
+          if (this.selectedFeed && this.selectedFeed.id === feed.id) {
+            this.selectedFeed.is_favorite = newStatus;
+            const favBtn = document.getElementById('btn-toggle-favorite');
+            if (favBtn) {
+              favBtn.style.color = newStatus ? 'var(--accent-amber)' : 'var(--text-muted)';
+            }
           }
-        }
 
-        // If currently filtering by favorites and user un-favorited this cam, refresh list
-        if (this.currentFilters.is_favorite === true && !newStatus) {
-          await this.loadFeeds();
-        } else {
-          // Re-render feed grid cards to update bookmark button icon and state
-          this.renderFeedGrid(false);
+          // If currently filtering by favorites and user un-favorited this cam, refresh list
+          if (this.currentFilters.is_favorite === true && !newStatus) {
+            await this.loadFeeds();
+          } else {
+            // Re-render feed grid cards to update bookmark button icon and state
+            this.renderFeedGrid(false);
+          }
+          await this.loadFacets();
         }
-        await this.loadFacets();
+      } catch (e) {
+        console.error('Failed to toggle favorite:', e);
       }
-    } catch (e) {
-      console.error('Failed to toggle favorite:', e);
-    }
+    });
   }
 
   async toggleFavoriteCurrent() {
@@ -1443,7 +1733,8 @@ class AppController {
       }
 
       const torEnabledEl = document.getElementById('setting-tor-enabled');
-      if (torEnabledEl) {
+      const adminFieldsEl = document.getElementById('settings-tor-admin-fields');
+      if (torEnabledEl && adminFieldsEl && adminFieldsEl.style.display !== 'none' && token) {
         const torPayload = {
           enabled: torEnabledEl.checked,
           auto_rotate: Boolean(document.getElementById('setting-tor-autorotate')?.checked),
@@ -1453,7 +1744,10 @@ class AppController {
         };
         const torRes = await fetch('/api/tor/config', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Admin-Token': token
+          },
           body: JSON.stringify(torPayload)
         });
         if (!torRes.ok) {

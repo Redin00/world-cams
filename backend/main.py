@@ -128,6 +128,7 @@ async def get_csrf_token_endpoint(request: Request):
 
 @app.get("/api/feeds", response_model=Dict[str, Any])
 async def list_feeds(
+    request: Request,
     country: Optional[str] = Query(None, max_length=8, description="Country code (e.g. US, DE)"),
     org: Optional[str] = Query(None, max_length=120, description="Organization / ISP name"),
     port: Optional[int] = Query(None, ge=1, le=65535, description="Port number (e.g. 554, 8554)"),
@@ -135,11 +136,16 @@ async def list_feeds(
     risk_level: Optional[str] = Query(None, max_length=32, description="Risk level (critical, high, medium, low)"),
     auth_status: Optional[str] = Query(None, max_length=64, description="Auth status (unauthenticated, default_creds, etc.)"),
     search: Optional[str] = Query(None, max_length=120, description="Full-text search keyword"),
-    is_favorite: Optional[bool] = Query(None, description="Filter favorites"),
+    is_favorite: Optional[bool] = Query(None, description="Filter favorites (Admin Only)"),
     limit: int = Query(25000, ge=1, le=50000),
     offset: int = Query(0, ge=0),
+    x_admin_token: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db)
 ):
+    if is_favorite is not None:
+        check_admin_token(x_admin_token, request)
+    is_admin = verify_admin_token_constant_time(x_admin_token)
+
     # Ensure all cameras load even if an older cached browser sends limit=100
     if limit < 1000:
         limit = 25000
@@ -195,7 +201,12 @@ async def list_feeds(
     res = await db.execute(query)
     records = res.scalars().all()
 
-    items = [record.to_dict() for record in records]
+    items = []
+    for record in records:
+        d = record.to_dict()
+        if not is_admin:
+            d["is_favorite"] = False
+        items.append(d)
     return {
         "total": total,
         "limit": limit,
@@ -204,26 +215,41 @@ async def list_feeds(
     }
 
 @app.get("/api/feeds/random")
-async def get_random_feed(db: AsyncSession = Depends(get_db)):
+async def get_random_feed(x_admin_token: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
     """Return a single random camera feed from the entire database."""
     query = select(CameraFeedModel).order_by(func.random()).limit(1)
     res = await db.execute(query)
     record = res.scalar_one_or_none()
     if not record:
         raise HTTPException(status_code=404, detail="No camera feeds available in database")
-    return record.to_dict()
+    d = record.to_dict()
+    if not verify_admin_token_constant_time(x_admin_token):
+        d["is_favorite"] = False
+    return d
 
 @app.get("/api/feeds/{feed_id}")
-async def get_feed(feed_id: str, db: AsyncSession = Depends(get_db)):
+async def get_feed(feed_id: str, x_admin_token: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
     safe_id = validate_safe_identifier(feed_id, "feed_id")
     res = await db.execute(select(CameraFeedModel).where(CameraFeedModel.id == safe_id))
     record = res.scalar_one_or_none()
     if not record:
         raise HTTPException(status_code=404, detail="Camera feed not found")
-    return record.to_dict()
+    d = record.to_dict()
+    if not verify_admin_token_constant_time(x_admin_token):
+        d["is_favorite"] = False
+    return d
 
 @app.patch("/api/feeds/{feed_id}")
-async def update_feed(feed_id: str, payload: CameraFeedUpdate, db: AsyncSession = Depends(get_db)):
+async def update_feed(
+    feed_id: str,
+    payload: CameraFeedUpdate,
+    request: Request,
+    x_admin_token: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db)
+):
+    if payload.is_favorite is not None:
+        check_admin_token(x_admin_token, request)
+
     safe_id = validate_safe_identifier(feed_id, "feed_id")
     res = await db.execute(select(CameraFeedModel).where(CameraFeedModel.id == safe_id))
     record = res.scalar_one_or_none()
@@ -323,8 +349,9 @@ async def batch_delete_feeds(
 # ==========================================
 
 @app.get("/api/facets", response_model=FacetSummary)
-async def get_facets(db: AsyncSession = Depends(get_db)):
+async def get_facets(x_admin_token: Optional[str] = Header(None), db: AsyncSession = Depends(get_db)):
     """Return aggregated facet statistics for dynamic filters."""
+    is_admin = verify_admin_token_constant_time(x_admin_token)
     # Country facets
     c_query = select(CameraFeedModel.country_name, CameraFeedModel.country_code, func.count(CameraFeedModel.id))\
         .group_by(CameraFeedModel.country_name, CameraFeedModel.country_code)\
@@ -372,10 +399,13 @@ async def get_facets(db: AsyncSession = Depends(get_db)):
     )
     unauth_count = unauth_res.scalar() or 0
 
-    fav_res = await db.execute(
-        select(func.count(CameraFeedModel.id)).where(CameraFeedModel.is_favorite == True)
-    )
-    fav_count = fav_res.scalar() or 0
+    if is_admin:
+        fav_res = await db.execute(
+            select(func.count(CameraFeedModel.id)).where(CameraFeedModel.is_favorite == True)
+        )
+        fav_count = fav_res.scalar() or 0
+    else:
+        fav_count = 0
 
     return FacetSummary(
         countries=countries,
@@ -433,10 +463,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         if not await tor_service.check_socks_alive():
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    f"Tor proxy is enabled (fail-closed) but SOCKS5 at "
-                    f"{tor_service.socks_host}:{tor_service.socks_port} is unreachable."
-                ),
+                detail="Tor proxy is enabled (fail-closed) but currently unreachable.",
             )
         if tor_service.auto_rotate:
             await tor_service.rotate_circuit(reason=f"stream_{req.feed_id or 'play'}", verify_ip=False)
@@ -490,7 +517,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                             stream_type=stype,
                             web_url=f"{scheme}://{feed.ip}:{feed.port}/",
                             tor_routed=tor_service.enabled,
-                            tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
+                            tor_circuit_id=None,
                             message=resolve_res.get("message", f"{scheme.upper()} Live Stream active")
                         )
                     elif stype == "web_ui":
@@ -505,7 +532,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                             stream_type="web_ui",
                             web_url=f"{scheme}://{feed.ip}:{feed.port}/",
                             tor_routed=tor_service.enabled,
-                            tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
+                            tor_circuit_id=None,
                             message=resolve_res.get("message", "Isolated Camera Web Portal (Code Execution Blocked)")
                         )
 
@@ -556,7 +583,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                                                 stream_type=stype_c,
                                                 web_url=portal_root,
                                                 tor_routed=tor_service.enabled,
-                                                tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
+                                                tor_circuit_id=None,
                                                 message=f"Extracted {stype_c.upper()} stream from isolated web portal ({proto_note})"
                                             )
                                 return StreamResponse(
@@ -570,7 +597,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                                     stream_type="web_ui",
                                     web_url=portal_root,
                                     tor_routed=tor_service.enabled,
-                                    tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
+                                    tor_circuit_id=None,
                                     message=f"Isolated Camera Web Portal on port {feed.port} ({proto_note}) — Code Execution Blocked"
                                 )
                     except HTTPException:
@@ -592,7 +619,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     stream_type="offline",
                     web_url=f"{scheme}://{feed.ip}:{feed.port}/",
                     tor_routed=tor_service.enabled,
-                    tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
+                    tor_circuit_id=None,
                     message=f"Port {feed.port} unreachable or camera offline"
                 )
 
@@ -608,7 +635,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                 stream_type=inferred_type,
                 web_url=f"{scheme}://{feed.ip}:{feed.port}/",
                 tor_routed=tor_service.enabled,
-                tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
+                tor_circuit_id=None,
                 message=f"{scheme.upper()} Live Stream / Snapshot endpoint ready"
             )
 
@@ -672,7 +699,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                         hls_manifest_url="",
                         status="http_stream",
                         tor_routed=tor_service.enabled,
-                        tor_circuit_id=tor_service.current_circuit_id if tor_service.enabled else None,
+                        tor_circuit_id=None,
                         message=resolve_res.get("message", "HTTP Stream resolved")
                     )
 
@@ -699,7 +726,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     )
 
     route_info["tor_routed"] = tor_service.enabled
-    route_info["tor_circuit_id"] = tor_service.current_circuit_id if tor_service.enabled else None
+    route_info["tor_circuit_id"] = None
     return StreamResponse(**route_info)
 
 
@@ -950,7 +977,6 @@ async def proxy_camera_stream(
             "X-Frame-Options": "DENY",
             "X-Extracted-Stream-Source": target_url,
             "X-Tor-Routed": "true" if tor_service.enabled else "false",
-            "X-Tor-Circuit": tor_service.current_circuit_id if tor_service.enabled else "direct",
             "Content-Disposition": 'inline; filename="camera_stream.jpg"',
             "Content-Security-Policy": (
                 "default-src 'none'; img-src 'self' data:; media-src 'self'; "
@@ -1081,7 +1107,6 @@ async def proxy_web_console(
         "X-Frame-Options": "SAMEORIGIN",
         "Referrer-Policy": "no-referrer",
         "X-Tor-Routed": "true" if tor_service.enabled else "false",
-        "X-Tor-Circuit": tor_service.current_circuit_id if tor_service.enabled else "direct",
         "Content-Security-Policy": (
             "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; "
             "script-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; sandbox"
@@ -1509,14 +1534,52 @@ async def get_checklist():
 # ==========================================
 
 @app.get("/api/tor/status", response_model=TorStatusResponse)
-async def get_tor_status(verify_ip: bool = Query(False)):
-    """Return current Tor SOCKS5 proxy status, circuit generation, and optional exit IP check."""
-    return await tor_service.get_status(verify_ip=verify_ip)
+async def get_tor_status(
+    request: Request,
+    verify_ip: bool = Query(False),
+    x_admin_token: Optional[str] = Header(None),
+):
+    """
+    Return Tor proxy status. Detailed relay/circuit telemetry (circuit_id, exit_ip,
+    host/port bindings) is redacted unless valid Administrator credentials are provided.
+    """
+    is_admin = verify_admin_token_constant_time(x_admin_token)
+    if is_admin:
+        return await tor_service.get_status(verify_ip=verify_ip)
+
+    st = await tor_service.get_status(verify_ip=False)
+    public_msg = (
+        "Tor Anonymizer ACTIVE"
+        if (st["enabled"] and st["socks_alive"])
+        else ("Tor Anonymizer enabled (offline)" if st["enabled"] else "Tor Proxy OFF (Direct)")
+    )
+    return TorStatusResponse(
+        enabled=st["enabled"],
+        auto_rotate=False,
+        socks_host="hidden",
+        socks_port=0,
+        control_port=0,
+        socks_alive=st["socks_alive"],
+        tor_binary_installed=False,
+        circuit_generation=0,
+        circuit_id="hidden",
+        last_rotated_at=None,
+        exit_ip=None,
+        exit_country=None,
+        exit_isp=None,
+        active_bridges=0,
+        message=public_msg,
+    )
 
 
 @app.post("/api/tor/config", response_model=TorStatusResponse)
-async def update_tor_config(req: TorConfigRequest):
-    """Enable/disable Tor proxy routing (off by default) or update SOCKS5/ControlPort settings."""
+async def update_tor_config(
+    req: TorConfigRequest,
+    request: Request,
+    x_admin_token: Optional[str] = Header(None),
+):
+    """Enable/disable Tor proxy routing or update SOCKS5/ControlPort settings (Admin Only)."""
+    check_admin_token(x_admin_token, request)
     try:
         return await tor_service.update_config(
             enabled=req.enabled,
@@ -1531,8 +1594,13 @@ async def update_tor_config(req: TorConfigRequest):
 
 
 @app.post("/api/tor/rotate", response_model=TorStatusResponse)
-async def rotate_tor_circuit(verify_ip: bool = Query(False)):
-    """Rotate the active Tor exit circuit (NEWNYM + fresh IsolateSocksAuth credentials)."""
+async def rotate_tor_circuit(
+    request: Request,
+    verify_ip: bool = Query(False),
+    x_admin_token: Optional[str] = Header(None),
+):
+    """Rotate the active Tor exit circuit (Admin Only)."""
+    check_admin_token(x_admin_token, request)
     await tor_service.rotate_circuit(reason="manual_api", verify_ip=verify_ip)
     return await tor_service.get_status(verify_ip=verify_ip)
 
@@ -1552,7 +1620,6 @@ async def health_check():
         "shodan_configured": bool(shodan_service.api_key),
         "tor_enabled": tor_service.enabled,
         "tor_socks_alive": tor_alive,
-        "tor_circuit_id": tor_service.current_circuit_id if tor_service.enabled else None,
     }
 
 # ==========================================
