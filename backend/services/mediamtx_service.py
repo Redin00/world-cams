@@ -340,8 +340,8 @@ class MediaMTXService:
         }
 
     _NON_HLS_AUDIO_TOKENS = (
-        "G711", "G722", "G726", "LPCM", "MPEG-1/2 AUDIO",
-        "PCMU", "PCMA", "ULAW", "ALAW", "AMR", "SPEEX",
+        "G711", "G722", "G726", "PCM", "MPEG-1/2 AUDIO",
+        "ULAW", "ALAW", "AMR", "SPEEX",
     )
     _HLS_AUDIO_TOKENS = ("MPEG-4 AUDIO", "AAC", "OPUS", "AC-3", "E-AC-3")
     _NON_HLS_VIDEO_TOKENS = ("M-JPEG", "MJPEG", "MPEG-4 VIDEO", "MPEG-1/2 VIDEO")

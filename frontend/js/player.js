@@ -837,20 +837,31 @@ class StreamPlayer {
     }
   }
 
-  attachHlsStream(hlsStreamPath, targetId, feed, isAltRtsp) {
+  attachHlsStream(hlsStreamPath, targetId, feed, isAltRtsp, preserveUnmuted = false) {
     if (!this.videoEl || this.activeFeedId !== targetId) return;
     if (this.activeHlsPath === hlsStreamPath && this.hlsInstance) return;
 
+    const wantUnmuted = preserveUnmuted && !this.videoEl.muted;
     this.teardownMediaEngines();
     this.isHlsMode = true;
     this.activeHlsPath = hlsStreamPath;
     this.hlsNetworkRetries = 0;
 
     const manifestUrl = `/api/hls/${encodeURIComponent(hlsStreamPath)}/index.m3u8`;
-    this.videoEl.muted = true;
+    this.videoEl.muted = !wantUnmuted;
     this.videoEl.autoplay = true;
     this.videoEl.playsInline = true;
     this.videoEl.controls = true;
+
+    const safePlay = () => {
+      if (!this.videoEl) return;
+      this.videoEl.play().catch(() => {
+        if (this.videoEl && !this.videoEl.muted) {
+          this.videoEl.muted = true;
+          this.videoEl.play().catch(() => {});
+        }
+      });
+    };
 
     if (window.Hls && window.Hls.isSupported()) {
       const hls = new window.Hls({
@@ -874,7 +885,7 @@ class StreamPlayer {
 
       hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
         if (this.activeFeedId === targetId && this.hlsInstance === hls && this.videoEl) {
-          this.videoEl.play().catch(() => {});
+          safePlay();
         }
       });
 
@@ -939,7 +950,7 @@ class StreamPlayer {
       hls.attachMedia(this.videoEl);
     } else if (this.videoEl.canPlayType('application/vnd.apple.mpegurl')) {
       this.videoEl.src = manifestUrl;
-      this.videoEl.play().catch(() => {});
+      safePlay();
     } else {
       this.setStatus('RTSP OFFLINE', 'Browser does not support HLS playback.');
     }
@@ -1139,13 +1150,13 @@ class StreamPlayer {
             }
 
             if (this.isHlsMode) {
-              // When forceHlsFix is active, wait for the transcoded _aac sidecar directly
+              // When forceHlsFix is active, wait for the transcoded _aac sidecar directly; otherwise wait up to 5 polls (~4.5s)
               const waitingOnSidecar = !status.aac_stream_path && (
-                forceHlsFix || (status.aac_pending && aacWaitPolls < 4)
+                forceHlsFix || (status.aac_pending && aacWaitPolls < 5)
               );
               const canLoadHlsNow = Boolean(status.aac_stream_path) || (Boolean(status.hls_ready) && !waitingOnSidecar);
 
-              if (!playbackStarted && !canLoadHlsNow && hlsMuxWaitPolls < 14) {
+              if (!playbackStarted && !canLoadHlsNow && hlsMuxWaitPolls < 16) {
                 hlsMuxWaitPolls++;
                 if (status.aac_pending) aacWaitPolls++;
                 if (!status.hls_ready && !status.aac_pending && status.bytes_received > 0 && hlsMuxWaitPolls >= 4) {
@@ -1170,15 +1181,13 @@ class StreamPlayer {
 
             this.setStatus(this.isHlsMode ? 'LIVE HLS' : 'LIVE WEBRTC');
 
-            let aacSuffix = aacSwitched ? ' + AAC' : '';
             if (this.isHlsMode) {
               if (!aacSwitched && status.aac_stream_path) {
-                this.attachHlsStream(status.aac_stream_path, targetId, feed, isAltRtsp);
+                this.attachHlsStream(status.aac_stream_path, targetId, feed, isAltRtsp, playbackStarted);
                 playbackStarted = true;
                 aacSwitched = true;
-                aacSuffix = forceHlsFix ? ' -> H264 + AAC' : ' + AAC';
               } else if (!playbackStarted) {
-                this.attachHlsStream(streamName, targetId, feed, isAltRtsp);
+                this.attachHlsStream(streamName, targetId, feed, isAltRtsp, false);
                 playbackStarted = true;
               }
             } else if (!playbackStarted) {
@@ -1186,8 +1195,24 @@ class StreamPlayer {
               this.attachWebRtcStream(streamName, targetId, feed, isAltRtsp);
             }
 
+            const tracksArr = Array.isArray(status.tracks) ? status.tracks : [];
+            const audioTracks = tracksArr.filter(t => {
+              const u = String(t).toUpperCase();
+              return !['H264', 'H265', 'HEVC', 'VP8', 'VP9', 'AV1', 'M-JPEG', 'MJPEG', 'MPEG-4 VIDEO', 'MPEG-1/2 VIDEO', 'GENERIC'].some(v => u.includes(v));
+            });
+            let audioBadge = '';
+            if (audioTracks.length === 0) {
+              audioBadge = ' [No Audio]';
+            } else if (this.isHlsMode && aacSwitched) {
+              audioBadge = ` [Audio: ${audioTracks[0]} -> AAC]`;
+            } else if (this.isHlsMode && status.aac_pending) {
+              audioBadge = ` [Audio: Converting ${audioTracks[0]} -> AAC...]`;
+            } else {
+              audioBadge = ` [Audio: ${audioTracks[0]}]`;
+            }
+
             const resInfo = status.resolution ? ` [${status.resolution}]` : '';
-            const codecInfo = status.codec ? ` ${status.codec}` : (status.tracks && status.tracks.length ? ` ${status.tracks.join('/')}` : '');
+            const codecInfo = status.codec ? ` ${status.codec}` : (tracksArr.length ? ` ${tracksArr.join('/')}` : '');
             const kbReceived = Math.round((status.bytes_received || 0) / 1024);
             const byteInfo = kbReceived > 0 ? ` (${kbReceived} KB rx)` : '';
 
@@ -1197,12 +1222,12 @@ class StreamPlayer {
                 : '';
               const protoLabel = this.isHlsMode ? 'HLS' : 'WebRTC';
               this.techProto.textContent = (isAltRtsp
-                ? `Alt RTSP 8554 ${protoLabel} Verified: ${codecInfo}${aacSuffix}${resInfo}${byteInfo}`
-                : `MediaMTX ${protoLabel} Verified: ${codecInfo}${aacSuffix}${resInfo}${byteInfo}`) + torSuffix;
+                ? `Alt RTSP 8554 ${protoLabel} Verified: ${codecInfo}${resInfo}${audioBadge}${byteInfo}`
+                : `MediaMTX ${protoLabel} Verified: ${codecInfo}${resInfo}${audioBadge}${byteInfo}`) + torSuffix;
             }
 
             // Keep polling while HLS sidecar warms up (or right after an H265/non-WebRTC upgrade to HLS)
-            if (switchedToHlsJustNow || (this.isHlsMode && !aacSwitched && status.aac_pending && aacWaitPolls < 8)) {
+            if (switchedToHlsJustNow || (this.isHlsMode && !aacSwitched && status.aac_pending && aacWaitPolls < 20)) {
               aacWaitPolls++;
               return;
             }
