@@ -46,15 +46,13 @@ from backend.services.education_service import get_education_articles, get_check
 from backend.services.rtsp_resolver import rtsp_resolver
 from backend.services.tor_service import tor_service
 
-# Configure logging
-_log_level = logging.DEBUG if (settings.DEBUG or settings.STREAM_DEBUG) else logging.INFO
+# Configure logging (keep third-party libraries at INFO/WARNING so aiosqlite/asyncio don't spam)
 logging.basicConfig(
-    level=_log_level,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-if not settings.STREAM_DEBUG:
-    for _noisy in ("httpx", "httpcore", "sqlalchemy.engine"):
-        logging.getLogger(_noisy).setLevel(logging.WARNING)
+if settings.STREAM_DEBUG:
+    logging.getLogger("worldcams").setLevel(logging.DEBUG)
 logger = logging.getLogger("worldcams.main")
 
 @asynccontextmanager
@@ -1271,10 +1269,10 @@ async def get_stream_status(stream_name: str, hls_audio: bool = Query(False)):
     if (
         hls_audio
         and status_info.get("ready")
-        and status_info.get("bytes_received", 0) > 0
-        and mediamtx_service._has_non_hls_audio(status_info.get("tracks", []))
+        and (status_info.get("bytes_received", 0) > 0 or bool(status_info.get("tracks")))
+        and mediamtx_service._needs_hls_sidecar(status_info.get("tracks", []))
     ):
-        aac_info = await mediamtx_service.ensure_hls_aac_sidecar(safe_name)
+        aac_info = await mediamtx_service.ensure_hls_aac_sidecar(safe_name, status_info.get("tracks", []))
         status_info.update(aac_info)
     return status_info
 

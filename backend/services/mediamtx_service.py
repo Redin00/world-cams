@@ -3,7 +3,6 @@ import logging
 import os
 import sys
 import re
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -160,10 +159,15 @@ class MediaMTXService:
 
         async with httpx.AsyncClient(timeout=4.0) as client:
             try:
-                # Re-add if path already exists so stale runOnInit/source fields never conflict
+                # Re-add if path already exists so stale runOnInit/source fields or old _aac sidecar never conflict
                 check_res = await client.get(f"{self.api_url}/v3/config/paths/get/{clean_path}")
                 if check_res.status_code == 200:
                     await client.delete(f"{self.api_url}/v3/config/paths/delete/{clean_path}")
+                if not clean_path.endswith("_aac"):
+                    try:
+                        await client.delete(f"{self.api_url}/v3/config/paths/delete/{clean_path}_aac")
+                    except Exception:
+                        pass
                 add_res = await client.post(
                     f"{self.api_url}/v3/config/paths/add/{clean_path}",
                     json=payload
@@ -236,9 +240,22 @@ class MediaMTXService:
                     res_str = ""
                     codec_str = ""
                     if tracks2:
-                        t0 = tracks2[0]
-                        codec_str = t0.get("codec", "")
-                        props = t0.get("codecProps", {})
+                        # Prefer the video track even when SDP puts audio first (e.g. ['G711', 'H264'])
+                        video_track = next(
+                            (
+                                t for t in tracks2
+                                if (
+                                    ((t.get("codecProps") or {}).get("width") and (t.get("codecProps") or {}).get("height"))
+                                    or any(
+                                        v in str(t.get("codec", "")).upper()
+                                        for v in ("H264", "H265", "HEVC", "VP8", "VP9", "AV1", "JPEG", "MPEG-4 VIDEO", "MPEG-1/2 VIDEO")
+                                    )
+                                )
+                            ),
+                            tracks2[0],
+                        )
+                        codec_str = video_track.get("codec", "")
+                        props = video_track.get("codecProps") or {}
                         if props.get("width") and props.get("height"):
                             res_str = f"{props['width']}x{props['height']}"
                     if not codec_str and tracks:
@@ -252,8 +269,9 @@ class MediaMTXService:
                         "resolution": res_str,
                         "readers": len(data.get("readers", []))
                     }
-        except Exception:
-            pass
+        except Exception as e:
+            if settings.STREAM_DEBUG:
+                logger.debug(f"[STREAM_DEBUG] get_path_status({clean}) error: {e}")
         return {
             "ready": False,
             "online": False,
@@ -264,21 +282,41 @@ class MediaMTXService:
             "readers": 0
         }
 
-    @staticmethod
-    def _has_non_hls_audio(tracks: List[str]) -> bool:
-        """Return True if MediaMTX reports an audio track that browser HLS cannot play natively (e.g. G.711)."""
+    _NON_HLS_AUDIO_TOKENS = (
+        "G711", "G722", "G726", "LPCM", "MPEG-1/2 AUDIO",
+        "PCMU", "PCMA", "ULAW", "ALAW", "AMR", "SPEEX",
+    )
+    _HLS_AUDIO_TOKENS = ("MPEG-4 AUDIO", "AAC", "OPUS", "AC-3", "E-AC-3")
+    _NON_HLS_VIDEO_TOKENS = ("M-JPEG", "MJPEG", "MPEG-4 VIDEO", "MPEG-1/2 VIDEO")
+
+    @classmethod
+    def _has_non_hls_audio(cls, tracks: List[str]) -> bool:
+        """Return True if MediaMTX reports an audio track that browser HLS cannot play natively."""
         if not tracks:
             return False
         upper = [str(t).upper() for t in tracks]
-        # Already has browser-compatible HLS audio
-        if any(tok in t for t in upper for tok in ("MPEG-4 AUDIO", "AAC", "MP3", "OPUS")):
+        if any(tok in t for t in upper for tok in cls._HLS_AUDIO_TOKENS):
             return False
-        return any(tok in t for t in upper for tok in ("G711", "PCMU", "PCMA", "G722", "G726", "LPCM", "ULAW", "ALAW"))
+        return any(tok in t for t in upper for tok in cls._NON_HLS_AUDIO_TOKENS)
 
-    async def ensure_hls_aac_sidecar(self, clean_path: str) -> Dict[str, Any]:
+    @classmethod
+    def _has_non_hls_video(cls, tracks: List[str]) -> bool:
+        """Return True if MediaMTX reports a video codec that MediaMTX fMP4 HLS cannot mux natively."""
+        if not tracks:
+            return False
+        upper = [str(t).upper() for t in tracks]
+        return any(tok in t for t in upper for tok in cls._NON_HLS_VIDEO_TOKENS)
+
+    @classmethod
+    def _needs_hls_sidecar(cls, tracks: List[str]) -> bool:
+        """Return True when HLS playback needs an ffmpeg sidecar (non-HLS audio or non-HLS video)."""
+        return cls._has_non_hls_audio(tracks) or cls._has_non_hls_video(tracks)
+
+    async def ensure_hls_aac_sidecar(self, clean_path: str, tracks: Optional[List[str]] = None) -> Dict[str, Any]:
         """
-        Hybrid HLS audio transcode: reads from MediaMTX's already-connected local RTSP path
-        and publishes `<clean_path>_aac` with `-c:v copy -c:a aac` so the original stream never breaks.
+        Hybrid HLS sidecar: reads from MediaMTX's already-connected local RTSP path
+        and publishes `<clean_path>_aac` (copying H264/H265 video and converting audio to AAC,
+        or transcoding M-JPEG/MPEG-4 video to H264 if needed) so the original stream never breaks.
         """
         if not settings.MEDIAMTX_HLS_TRANSCODE_AUDIO or shutil.which("ffmpeg") is None:
             return {"aac_stream_path": None, "aac_pending": False}
@@ -287,16 +325,24 @@ class MediaMTXService:
         if not clean or clean.endswith("_aac"):
             return {"aac_stream_path": None, "aac_pending": False}
 
+        transcode_video = self._has_non_hls_video(tracks or [])
         aac_path = f"{clean}_aac"
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 cfg_res = await client.get(f"{self.api_url}/v3/config/paths/get/{aac_path}")
                 if cfg_res.status_code != 200:
                     ff_log = "error" if settings.STREAM_DEBUG else "quiet"
+                    if transcode_video:
+                        v_args = "-c:v libx264 -preset ultrafast -tune zerolatency -g 15 -pix_fmt yuv420p"
+                        map_args = "-map 0:v:0 -map 0:a:0?"
+                    else:
+                        v_args = "-c:v copy"
+                        map_args = "-map 0:v:0 -map 0:a:0"
                     ffmpeg_cmd = (
-                        f"ffmpeg -nostdin -loglevel {ff_log} -rtsp_transport tcp -analyzeduration 1000000 -probesize 1000000 "
-                        f"-max_delay 500000 -i rtsp://127.0.0.1:{self.rtsp_port}/{clean} "
-                        f"-map 0:v:0 -map 0:a:0 -c:v copy -c:a aac -ar 44100 -ac 1 -b:a 48k "
+                        f"ffmpeg -nostdin -loglevel {ff_log} -rtsp_transport tcp -fflags +discardcorrupt "
+                        f"-analyzeduration 1000000 -probesize 1000000 -max_delay 500000 "
+                        f"-i rtsp://127.0.0.1:{self.rtsp_port}/{clean} "
+                        f"{map_args} {v_args} -c:a aac -ar 44100 -ac 1 -b:a 48k "
                         f"-avoid_negative_ts make_zero -rtsp_transport tcp -f rtsp rtsp://127.0.0.1:{self.rtsp_port}/{aac_path}"
                     )
                     add_res = await client.post(
@@ -305,7 +351,7 @@ class MediaMTXService:
                     )
                     if settings.STREAM_DEBUG:
                         logger.debug(
-                            f"[STREAM_DEBUG] ensure_hls_aac_sidecar({clean} -> {aac_path}): "
+                            f"[STREAM_DEBUG] ensure_hls_aac_sidecar({clean} -> {aac_path}, transcode_video={transcode_video}): "
                             f"add_status={add_res.status_code} body={add_res.text[:300]}"
                         )
                     return {"aac_stream_path": None, "aac_pending": True}
@@ -313,12 +359,17 @@ class MediaMTXService:
                 path_res = await client.get(f"{self.api_url}/v3/paths/get/{aac_path}")
                 if path_res.status_code == 200:
                     pdata = path_res.json()
+                    ptracks = pdata.get("tracks", [])
+                    pbytes = pdata.get("bytesReceived", 0)
+                    hm_res = await client.get(f"{self.api_url}/v3/hlsmuxers/get/{aac_path}")
+                    hm_ready = hm_res.status_code == 200
+                    has_aac = transcode_video or any("MPEG-4 AUDIO" in str(t).upper() for t in ptracks)
                     if settings.STREAM_DEBUG:
                         logger.debug(
                             f"[STREAM_DEBUG] sidecar_status({aac_path}): ready={pdata.get('ready')} "
-                            f"bytes={pdata.get('bytesReceived', 0)} tracks={pdata.get('tracks', [])}"
+                            f"bytes={pbytes} tracks={ptracks} hlsmuxer={hm_res.status_code}"
                         )
-                    if pdata.get("ready") and pdata.get("bytesReceived", 0) > 0:
+                    if pdata.get("ready") and pbytes > 2048 and has_aac and hm_ready:
                         return {"aac_stream_path": aac_path, "aac_pending": False}
                 elif settings.STREAM_DEBUG:
                     logger.debug(f"[STREAM_DEBUG] sidecar_status({aac_path}): http={path_res.status_code}")

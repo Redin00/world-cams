@@ -283,7 +283,8 @@ class StreamPlayer {
     }
   }
 
-  stop() {
+  stop(nextStreamPath = null) {
+    const prevPath = this.activeStreamData?.stream_path || this.currentFeed?.stream_path;
     // 1. Abort any in-flight fetch requests immediately
     if (this.abortController) {
       this.abortController.abort();
@@ -346,9 +347,8 @@ class StreamPlayer {
       this.videoEl.style.display = 'none';
     }
 
-    // 7. Release previous MediaMTX stream route
-    if (this.currentFeed && this.currentFeed.stream_path) {
-      const prevPath = this.currentFeed.stream_path;
+    // 7. Release previous MediaMTX stream route (skip if re-playing the exact same path to avoid a stop/play race)
+    if (prevPath && prevPath !== nextStreamPath) {
       fetch('/api/streams/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -363,7 +363,7 @@ class StreamPlayer {
 
   async playHttpStream(feed, customUrl) {
     const portNum = Number(feed.port) || 80;
-    this.stop();
+    this.stop(feed?.stream_path || null);
     this.currentFeed = feed;
     this.activeFeedId = feed.id;
     const targetId = feed.id;
@@ -549,7 +549,7 @@ class StreamPlayer {
   }
 
   async playFeed(feed, isRetry = false) {
-    this.stop();
+    this.stop(feed?.stream_path || null);
     this.currentFeed = feed;
     this.activeFeedId = feed.id;
     if (!isRetry) {
@@ -796,6 +796,7 @@ class StreamPlayer {
     const maxAttempts = this.currentFeedTorRouted ? 20 : 10; // Verify every 900ms (~18s over Tor, ~9s direct)
     let streamVerified = false;
     let aacWaitPolls = 0;
+    let aacSwitched = false;
 
     this.telemetryInterval = setInterval(async () => {
       // If user switched camera in the meantime, terminate poller
@@ -827,19 +828,23 @@ class StreamPlayer {
             if (this.webrtcFrame) this.webrtcFrame.style.display = 'block';
 
             const codecUpper = (status.codec || '').toUpperCase();
+            let switchedToHlsJustNow = false;
             if ((codecUpper.includes('H265') || codecUpper.includes('HEVC')) && this.activeStreamData?.hls_url && !this.isHlsMode) {
               this.isHlsMode = true;
+              switchedToHlsJustNow = true;
               if (this.webrtcFrame) this.webrtcFrame.src = `${this.activeStreamData.hls_url}/?autoplay=true&muted=true`;
               this.setStatus('LIVE HLS');
             } else {
               this.setStatus(this.isHlsMode ? 'LIVE HLS' : 'LIVE WEBRTC');
             }
 
-            let aacSuffix = '';
-            if (this.isHlsMode && status.aac_stream_path && this.activeStreamData?.hls_url && this.webrtcFrame) {
-              const baseParts = this.activeStreamData.hls_url.split('/');
+            let aacSuffix = aacSwitched ? ' + AAC' : '';
+            if (this.isHlsMode && !aacSwitched && status.aac_stream_path && this.activeStreamData?.hls_url && this.webrtcFrame) {
+              const hlsRoot = this.activeStreamData.hls_url.replace(/\/+$/, '');
+              const baseParts = hlsRoot.split('/');
               baseParts[baseParts.length - 1] = status.aac_stream_path;
               this.webrtcFrame.src = `${baseParts.join('/')}/?autoplay=true&muted=true`;
+              aacSwitched = true;
               aacSuffix = ' + AAC';
             }
 
@@ -858,8 +863,8 @@ class StreamPlayer {
                 : `MediaMTX ${protoLabel} Verified: ${codecInfo}${aacSuffix}${resInfo}${byteInfo}`) + torSuffix;
             }
 
-            // Keep polling briefly while the ffmpeg AAC sidecar warms up; otherwise we're done
-            if (this.isHlsMode && status.aac_pending && aacWaitPolls < 6) {
+            // Keep polling while HLS sidecar warms up (or right after an H265 upgrade to HLS)
+            if (switchedToHlsJustNow || (this.isHlsMode && !aacSwitched && status.aac_pending && aacWaitPolls < 8)) {
               aacWaitPolls++;
               return;
             }
