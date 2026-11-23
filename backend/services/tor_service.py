@@ -516,6 +516,34 @@ class TorProxyService:
         )
         return recomputed.encode("latin-1")
 
+    @staticmethod
+    def _rewrite_rtsp_r2c(
+        data: bytes,
+        cam_ip: str,
+        cam_port: int,
+        local_host_port: bytes,
+    ) -> bytes:
+        """
+        Keep RTSP 3xx redirect Location headers inside the local Tor bridge so MediaMTX
+        cannot bypass Tor by chasing a remote camera's `Location: rtsp://<cam_ip>...` header.
+        """
+        if not data or not data.startswith(b"RTSP/") or b"Location:" not in data and b"location:" not in data:
+            return data
+        text = data.decode("latin-1")
+        if not re.match(r"^RTSP/\d\.\d\s+30[12378]\b", text):
+            return data
+        local_str = local_host_port.decode("latin-1")
+        remote_hp = f"{cam_ip}:{int(cam_port)}"
+        def _rw_loc(match: re.Match) -> str:
+            line = match.group(0)
+            if remote_hp in line:
+                return line.replace(remote_hp, local_str)
+            if int(cam_port) == 554 and f"//{cam_ip}/" in line:
+                return line.replace(f"//{cam_ip}/", f"//{local_str}/")
+            return line
+        rewritten = re.sub(r"(?im)^Location:\s*rtsps?://[^\r\n]+", _rw_loc, text)
+        return rewritten.encode("latin-1")
+
     async def ensure_rtsp_bridge(
         self,
         stream_path: str,
@@ -598,6 +626,13 @@ class TorProxyService:
                                 data = await remote_reader.read(65536)
                                 if not data:
                                     break
+                                if local_port_val and data.startswith(b"RTSP/"):
+                                    data = self._rewrite_rtsp_r2c(
+                                        data,
+                                        cam_ip,
+                                        int(cam_port),
+                                        local_variants[0],
+                                    )
                                 client_writer.write(data)
                                 await client_writer.drain()
                         except Exception:

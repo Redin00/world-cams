@@ -681,6 +681,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     await db.refresh(feed)
                     current_works = True
 
+        probed_unverified = False
         if not current_works:
             resolve_res = await rtsp_resolver.resolve_camera(
                 feed.ip, feed.port, product_hint, rtsp_url, continuous=True,
@@ -713,6 +714,25 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                         tor_circuit_id=None,
                         message=resolve_res.get("message", "HTTP Stream resolved")
                     )
+            else:
+                probed_unverified = True
+                if resolve_res.get("reachable") is False and not any(
+                    k in (rtsp_url or "").lower()
+                    for k in ("rtsp.stream", "pattern", "demo", "simulated", "198.51.100", "203.0.113", "192.0.2")
+                ):
+                    return StreamResponse(
+                        stream_path=feed.stream_path,
+                        rtsp_source=rtsp_url or f"rtsp://{feed.ip}:{feed.port}/",
+                        webrtc_url="",
+                        webrtc_whep_url="",
+                        hls_url="",
+                        hls_manifest_url="",
+                        status="offline",
+                        stream_type="offline",
+                        tor_routed=tor_service.should_route_via_tor(feed.ip),
+                        tor_circuit_id=None,
+                        message=f"RTSP port {feed.port} unreachable or filtered"
+                    )
 
     if not rtsp_url:
         raise HTTPException(status_code=400, detail="Missing rtsp_url or feed_id")
@@ -721,6 +741,8 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         stream_path = f"stream_{abs(hash(rtsp_url)) % 1000000}"
 
     route_info = await mediamtx_service.register_stream(stream_path, rtsp_url)
+    if feed and locals().get("probed_unverified"):
+        route_info["status"] = "probed_unverified"
 
     # Auto-detect HTTPS reverse-proxy deployments even when .env leaves MEDIAMTX_HLS_URL at localhost
     req_proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip().lower()
@@ -1191,7 +1213,7 @@ async def proxy_web_console(
                 "code_execution_blocked": True,
                 "reachable": True,
                 "tor_routed": tor_service.enabled,
-                "tor_circuit_id": tor_service.current_circuit_id if tor_service.enabled else None,
+                "tor_circuit_id": None,
                 "target_url": effective_url,
                 "status_code": resp_status,
                 "portal_title": extracted["portal_title"],
