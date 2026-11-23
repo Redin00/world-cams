@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
     DEBUG: bool = True
+    STREAM_DEBUG: bool = False
 
     # MediaMTX Streaming Server
     MEDIAMTX_PATH: str = str(BASE_DIR / "bin" / ("mediamtx.exe" if sys.platform == "win32" else "mediamtx"))

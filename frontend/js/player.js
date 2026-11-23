@@ -794,6 +794,8 @@ class StreamPlayer {
 
     let attempts = 0;
     const maxAttempts = this.currentFeedTorRouted ? 20 : 10; // Verify every 900ms (~18s over Tor, ~9s direct)
+    let streamVerified = false;
+    let aacWaitPolls = 0;
 
     this.telemetryInterval = setInterval(async () => {
       // If user switched camera in the meantime, terminate poller
@@ -805,7 +807,10 @@ class StreamPlayer {
 
       attempts++;
       try {
-        const res = await fetch(`/api/streams/status/${streamName}`);
+        const statusUrl = this.isHlsMode
+          ? `/api/streams/status/${streamName}?hls_audio=true`
+          : `/api/streams/status/${streamName}`;
+        const res = await fetch(statusUrl);
         if (this.activeFeedId !== targetId) return;
 
         if (res.ok) {
@@ -814,8 +819,7 @@ class StreamPlayer {
 
           // If MediaMTX has connected, decoded tracks, and is actively serving video:
           if (status.ready && (status.bytes_received > 0 || (status.tracks && status.tracks.length > 0))) {
-            clearInterval(this.telemetryInterval);
-            this.telemetryInterval = null;
+            streamVerified = true;
 
             if (this.overlayEl) this.overlayEl.style.display = 'none';
             if (this.snapshotEl) this.snapshotEl.style.display = 'none';
@@ -831,6 +835,14 @@ class StreamPlayer {
               this.setStatus(this.isHlsMode ? 'LIVE HLS' : 'LIVE WEBRTC');
             }
 
+            let aacSuffix = '';
+            if (this.isHlsMode && status.aac_stream_path && this.activeStreamData?.hls_url && this.webrtcFrame) {
+              const baseParts = this.activeStreamData.hls_url.split('/');
+              baseParts[baseParts.length - 1] = status.aac_stream_path;
+              this.webrtcFrame.src = `${baseParts.join('/')}/?autoplay=true&muted=true`;
+              aacSuffix = ' + AAC';
+            }
+
             const resInfo = status.resolution ? ` [${status.resolution}]` : '';
             const codecInfo = status.codec ? ` ${status.codec}` : (status.tracks && status.tracks.length ? ` ${status.tracks.join('/')}` : '');
             const kbReceived = Math.round((status.bytes_received || 0) / 1024);
@@ -842,14 +854,28 @@ class StreamPlayer {
                 : '';
               const protoLabel = this.isHlsMode ? 'HLS' : 'WebRTC';
               this.techProto.textContent = (isAltRtsp
-                ? `Alt RTSP 8554 ${protoLabel} Verified: ${codecInfo}${resInfo}${byteInfo}`
-                : `MediaMTX ${protoLabel} Verified: ${codecInfo}${resInfo}${byteInfo}`) + torSuffix;
+                ? `Alt RTSP 8554 ${protoLabel} Verified: ${codecInfo}${aacSuffix}${resInfo}${byteInfo}`
+                : `MediaMTX ${protoLabel} Verified: ${codecInfo}${aacSuffix}${resInfo}${byteInfo}`) + torSuffix;
             }
+
+            // Keep polling briefly while the ffmpeg AAC sidecar warms up; otherwise we're done
+            if (this.isHlsMode && status.aac_pending && aacWaitPolls < 6) {
+              aacWaitPolls++;
+              return;
+            }
+            clearInterval(this.telemetryInterval);
+            this.telemetryInterval = null;
             return;
           }
         }
       } catch (e) {
         console.warn('Telemetry check notice:', e);
+      }
+
+      if (streamVerified) {
+        clearInterval(this.telemetryInterval);
+        this.telemetryInterval = null;
+        return;
       }
 
       // If max attempts reached and stream never decoded frames, trigger automated multi-path resolution

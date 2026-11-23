@@ -53,13 +53,18 @@ class MediaMTXService:
             logger.warning(f"MediaMTX binary not found at {bin_path}. Run {cmd_hint}")
             return
 
-        logger.info(f"Launching MediaMTX process with config: {conf_path}")
+        logger.info(f"Launching MediaMTX process with config: {conf_path} (stream_debug={settings.STREAM_DEBUG})")
         try:
             is_win = sys.platform == "win32"
-            popen_kwargs: Dict[str, Any] = {
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.DEVNULL,
-            }
+            popen_kwargs: Dict[str, Any] = (
+                {}
+                if settings.STREAM_DEBUG
+                else {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+            )
+            if settings.STREAM_DEBUG:
+                env = os.environ.copy()
+                env["MTX_LOGLEVEL"] = "debug"
+                popen_kwargs["env"] = env
             if not is_win:
                 popen_kwargs["start_new_session"] = True
 
@@ -147,36 +152,15 @@ class MediaMTXService:
             else:
                 await tor_service.stop_rtsp_bridge(clean_path)
 
-            use_ffmpeg_audio = (
-                settings.effective_playback_mode == "hls"
-                and settings.MEDIAMTX_HLS_TRANSCODE_AUDIO
-                and shutil.which("ffmpeg") is not None
-            )
-            if use_ffmpeg_audio:
-                quoted_src = (
-                    f'"{effective_source.replace(chr(34), "")}"'
-                    if sys.platform == "win32"
-                    else shlex.quote(effective_source)
-                )
-                ffmpeg_cmd = (
-                    f"ffmpeg -nostdin -rtsp_transport tcp -fflags +genpts -i {quoted_src} "
-                    f"-map 0:v:0 -map 0:a:0? -c:v copy -c:a aac -ar 44100 -ac 1 -b:a 48k "
-                    f"-rtsp_transport tcp -f rtsp rtsp://127.0.0.1:{self.rtsp_port}/{clean_path}"
-                )
-                payload = {
-                    "runOnInit": ffmpeg_cmd,
-                    "runOnInitRestart": True,
-                }
-            else:
-                payload = {
-                    "source": effective_source,
-                    "sourceOnDemand": False,
-                    "rtspTransport": "tcp"
-                }
+            payload = {
+                "source": effective_source,
+                "sourceOnDemand": False,
+                "rtspTransport": "tcp"
+            }
 
         async with httpx.AsyncClient(timeout=4.0) as client:
             try:
-                # Re-add if path already exists so source vs runOnInit fields never conflict
+                # Re-add if path already exists so stale runOnInit/source fields never conflict
                 check_res = await client.get(f"{self.api_url}/v3/config/paths/get/{clean_path}")
                 if check_res.status_code == 200:
                     await client.delete(f"{self.api_url}/v3/config/paths/delete/{clean_path}")
@@ -184,6 +168,11 @@ class MediaMTXService:
                     f"{self.api_url}/v3/config/paths/add/{clean_path}",
                     json=payload
                 )
+                if settings.STREAM_DEBUG:
+                    logger.debug(
+                        f"[STREAM_DEBUG] register_stream({clean_path}): status={add_res.status_code} "
+                        f"tor={tor_routed} body={add_res.text[:300]}"
+                    )
                 status = "updated" if check_res.status_code == 200 else (
                     "created" if add_res.status_code in (200, 201) else "configured"
                 )
@@ -275,13 +264,81 @@ class MediaMTXService:
             "readers": 0
         }
 
+    @staticmethod
+    def _has_non_hls_audio(tracks: List[str]) -> bool:
+        """Return True if MediaMTX reports an audio track that browser HLS cannot play natively (e.g. G.711)."""
+        if not tracks:
+            return False
+        upper = [str(t).upper() for t in tracks]
+        # Already has browser-compatible HLS audio
+        if any(tok in t for t in upper for tok in ("MPEG-4 AUDIO", "AAC", "MP3", "OPUS")):
+            return False
+        return any(tok in t for t in upper for tok in ("G711", "PCMU", "PCMA", "G722", "G726", "LPCM", "ULAW", "ALAW"))
+
+    async def ensure_hls_aac_sidecar(self, clean_path: str) -> Dict[str, Any]:
+        """
+        Hybrid HLS audio transcode: reads from MediaMTX's already-connected local RTSP path
+        and publishes `<clean_path>_aac` with `-c:v copy -c:a aac` so the original stream never breaks.
+        """
+        if not settings.MEDIAMTX_HLS_TRANSCODE_AUDIO or shutil.which("ffmpeg") is None:
+            return {"aac_stream_path": None, "aac_pending": False}
+
+        clean = re.sub(r"[^a-zA-Z0-9_-]", "_", clean_path).strip("_")
+        if not clean or clean.endswith("_aac"):
+            return {"aac_stream_path": None, "aac_pending": False}
+
+        aac_path = f"{clean}_aac"
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                cfg_res = await client.get(f"{self.api_url}/v3/config/paths/get/{aac_path}")
+                if cfg_res.status_code != 200:
+                    ff_log = "error" if settings.STREAM_DEBUG else "quiet"
+                    ffmpeg_cmd = (
+                        f"ffmpeg -nostdin -loglevel {ff_log} -rtsp_transport tcp -analyzeduration 1000000 -probesize 1000000 "
+                        f"-max_delay 500000 -i rtsp://127.0.0.1:{self.rtsp_port}/{clean} "
+                        f"-map 0:v:0 -map 0:a:0 -c:v copy -c:a aac -ar 44100 -ac 1 -b:a 48k "
+                        f"-avoid_negative_ts make_zero -rtsp_transport tcp -f rtsp rtsp://127.0.0.1:{self.rtsp_port}/{aac_path}"
+                    )
+                    add_res = await client.post(
+                        f"{self.api_url}/v3/config/paths/add/{aac_path}",
+                        json={"runOnInit": ffmpeg_cmd, "runOnInitRestart": False},
+                    )
+                    if settings.STREAM_DEBUG:
+                        logger.debug(
+                            f"[STREAM_DEBUG] ensure_hls_aac_sidecar({clean} -> {aac_path}): "
+                            f"add_status={add_res.status_code} body={add_res.text[:300]}"
+                        )
+                    return {"aac_stream_path": None, "aac_pending": True}
+
+                path_res = await client.get(f"{self.api_url}/v3/paths/get/{aac_path}")
+                if path_res.status_code == 200:
+                    pdata = path_res.json()
+                    if settings.STREAM_DEBUG:
+                        logger.debug(
+                            f"[STREAM_DEBUG] sidecar_status({aac_path}): ready={pdata.get('ready')} "
+                            f"bytes={pdata.get('bytesReceived', 0)} tracks={pdata.get('tracks', [])}"
+                        )
+                    if pdata.get("ready") and pdata.get("bytesReceived", 0) > 0:
+                        return {"aac_stream_path": aac_path, "aac_pending": False}
+                elif settings.STREAM_DEBUG:
+                    logger.debug(f"[STREAM_DEBUG] sidecar_status({aac_path}): http={path_res.status_code}")
+                return {"aac_stream_path": None, "aac_pending": True}
+        except Exception as e:
+            logger.debug(f"HLS AAC sidecar notice for {clean}: {e}")
+            return {"aac_stream_path": None, "aac_pending": False}
+
     async def stop_stream(self, clean_path: str) -> bool:
-        """Stops pulling a remote camera stream and cleans up its MediaMTX path and Tor RTSP bridge."""
+        """Stops pulling a remote camera stream and cleans up its MediaMTX path, AAC sidecar, and Tor bridge."""
         clean = re.sub(r"[^a-zA-Z0-9_-]", "_", clean_path).strip("_")
         await tor_service.stop_rtsp_bridge(clean)
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 res = await client.delete(f"{self.api_url}/v3/config/paths/delete/{clean}")
+                if clean and not clean.endswith("_aac"):
+                    try:
+                        await client.delete(f"{self.api_url}/v3/config/paths/delete/{clean}_aac")
+                    except Exception:
+                        pass
                 return res.status_code in (200, 204)
         except Exception:
             return False

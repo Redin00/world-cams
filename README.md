@@ -136,11 +136,16 @@ ADMIN_TOKEN=worldcams-admin-2026
 APP_HOST=0.0.0.0
 APP_PORT=8000
 DEBUG=True
+# Verbose stream debugging (sets MediaMTX logLevel=debug and prints MediaMTX/ffmpeg errors in console)
+STREAM_DEBUG=false
 
-# MediaMTX Ports
+# MediaMTX Ports & Playback
 MEDIAMTX_RTSP_PORT=8554
 MEDIAMTX_API_URL=http://localhost:9997
+# Playback mode: auto uses HLS directly when MEDIAMTX_HLS_URL is https://; or force "hls" / "webrtc"
 MEDIAMTX_PLAYBACK_MODE=auto
+# Hybrid HLS audio transcode: spawns an ffmpeg AAC sidecar only when G.711/non-HLS audio is detected (-c:v copy)
+MEDIAMTX_HLS_TRANSCODE_AUDIO=true
 MEDIAMTX_WHEP_URL=http://localhost:8889
 MEDIAMTX_HLS_URL=http://localhost:8888
 

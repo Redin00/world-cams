@@ -47,10 +47,14 @@ from backend.services.rtsp_resolver import rtsp_resolver
 from backend.services.tor_service import tor_service
 
 # Configure logging
+_log_level = logging.DEBUG if (settings.DEBUG or settings.STREAM_DEBUG) else logging.INFO
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
+if not settings.STREAM_DEBUG:
+    for _noisy in ("httpx", "httpcore", "sqlalchemy.engine"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
 logger = logging.getLogger("worldcams.main")
 
 @asynccontextmanager
@@ -1260,10 +1264,18 @@ async def get_active_streams():
     return {"active_paths": paths}
 
 @app.get("/api/streams/status/{stream_name}")
-async def get_stream_status(stream_name: str):
+async def get_stream_status(stream_name: str, hls_audio: bool = Query(False)):
     """Real-time streaming transmission telemetry and health check."""
     safe_name = validate_safe_identifier(stream_name, "stream_name")
     status_info = await mediamtx_service.get_path_status(safe_name)
+    if (
+        hls_audio
+        and status_info.get("ready")
+        and status_info.get("bytes_received", 0) > 0
+        and mediamtx_service._has_non_hls_audio(status_info.get("tracks", []))
+    ):
+        aac_info = await mediamtx_service.ensure_hls_aac_sidecar(safe_name)
+        status_info.update(aac_info)
     return status_info
 
 @app.post("/api/streams/stop")
