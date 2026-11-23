@@ -198,33 +198,21 @@ sudo ufw allow 8189/tcp
 > On Oracle Cloud, AWS, or GCP, remember to also add matching **Ingress Rules** in the Cloud Web Console (VCN Security List / Security Group).
 
 ### 2. Reverse Proxy Setup (Nginx / HTTPS)
-When hosting behind Nginx (especially over `https://`), proxy `/hls/` alongside `/` so MediaMTX streams are served over standard HTTPS port `443` without mixed-content blocks, and set `MEDIAMTX_HLS_URL` in `.env`:
-
-```env
-MEDIAMTX_PLAYBACK_MODE=auto
-MEDIAMTX_HLS_URL=https://your.domain.com/hls
-```
+FastAPI proxies both HLS (`/api/hls/...`) and WebRTC WHEP (`/api/whep/...`) over the same origin, so **only a single `location /` block is required** in Nginx—no extra `/hls/` or `/webrtc/` blocks, no extra `.env` URL overrides, and no port `8888`/`8889`/`8189` exposure needed:
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Real-IP $remote_addr;
-    proxy_buffering off;  # Required for live MJPEG /api/proxy/stream
-}
-
-location /hls/ {
-    proxy_pass http://127.0.0.1:8888/;
-    proxy_redirect / /hls/;
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_set_header Host $host;
-    proxy_buffering off;
+    proxy_buffering off;  # Required for live MJPEG & HLS streaming
 }
 ```
-*(Note: With `MEDIAMTX_PLAYBACK_MODE=auto` and an `https://` `MEDIAMTX_HLS_URL`, RTSP playback uses Low-Latency HLS over standard HTTPS port `443` without needing port `8189` or exposing your VPS origin IP behind Cloudflare.)*
+*(Note: With `MEDIAMTX_PLAYBACK_MODE=auto`, HTTPS requests automatically use same-origin Low-Latency HLS over standard HTTPS port `443`—compatible with Cloudflare and Tor—while local HTTP uses low-latency WebRTC with automatic 3.5s fallback to HLS if UDP/TCP `8189` is blocked.)*
 
 
 ---

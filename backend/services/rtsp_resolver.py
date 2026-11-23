@@ -914,8 +914,8 @@ class VendorRtspResolver:
         if not is_web_camera_port(port) and (port in (554, 8554, 10554, 5544, 7070, 7447, 37777) or "rtsp://" in current_url):
             logger.info(f"Continuous RTSP probing (unauthenticated pass) for {ip}:{port} (Vendor: {vendor_key.upper()}, Candidates: {len(candidate_paths)})...")
 
-            # Process ALL candidate paths in concurrent batches of 8 without credentials
-            BATCH_SIZE = 8
+            # Process candidate paths in moderate batches of 4 so low-end CCTV chips don't drop connections
+            BATCH_SIZE = 4
             for i in range(0, len(candidate_paths), BATCH_SIZE):
                 if disconnect_check and await disconnect_check():
                     logger.info(f"Aborted RTSP probing for {ip}:{port} (client disconnected).")
@@ -928,7 +928,7 @@ class VendorRtspResolver:
                         "message": "Client disconnected; probing stopped."
                     }
                 batch = candidate_paths[i:i + BATCH_SIZE]
-                tasks = [self.probe_rtsp_path(ip, port, path, creds=None, timeout=1.0) for path in batch]
+                tasks = [self.probe_rtsp_path(ip, port, path, creds=None, timeout=1.6) for path in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 tested_count += len(batch)
 

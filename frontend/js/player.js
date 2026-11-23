@@ -68,6 +68,13 @@ class StreamPlayer {
     this.btnOpenWeb = document.getElementById('btn-open-web-cam');
     this.isHlsMode = false;
     this.activeStreamData = null;
+    this.hlsInstance = null;
+    this.peerConnection = null;
+    this.whepSessionUrl = null;
+    this.whepFallbackTimer = null;
+    this.activeHlsPath = null;
+    this.forceHlsFixRequested = false;
+    this.hlsNetworkRetries = 0;
     
     // Tech info elements
     this.techProto = document.getElementById('tech-proto');
@@ -160,8 +167,8 @@ class StreamPlayer {
       } else if (state.startsWith('LIVE WEBRTC') || state.startsWith('LIVE HLS')) {
         if (this.overlayEl) this.overlayEl.style.display = 'none';
         if (this.snapshotEl) this.snapshotEl.style.display = 'none';
-        if (this.videoEl) this.videoEl.style.display = 'none';
-        if (this.webrtcFrame) this.webrtcFrame.style.display = 'block';
+        if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
+        if (this.videoEl) this.videoEl.style.display = 'block';
       } else {
         // Direct HTTP Live stream, Snapshot, or Offline
         if (this.overlayEl) this.overlayEl.style.display = 'none';
@@ -283,6 +290,47 @@ class StreamPlayer {
     }
   }
 
+  teardownMediaEngines() {
+    if (this.whepFallbackTimer) {
+      clearTimeout(this.whepFallbackTimer);
+      this.whepFallbackTimer = null;
+    }
+    if (this.hlsInstance) {
+      try {
+        this.hlsInstance.destroy();
+      } catch (_) {}
+      this.hlsInstance = null;
+    }
+    if (this.peerConnection) {
+      try {
+        this.peerConnection.ontrack = null;
+        this.peerConnection.onicecandidate = null;
+        this.peerConnection.oniceconnectionstatechange = null;
+        this.peerConnection.onconnectionstatechange = null;
+        this.peerConnection.close();
+      } catch (_) {}
+      this.peerConnection = null;
+    }
+    if (this.whepSessionUrl) {
+      const teardownUrl = this.whepSessionUrl;
+      this.whepSessionUrl = null;
+      fetch(teardownUrl, { method: 'DELETE', keepalive: true }).catch(() => {});
+    }
+    if (this.videoEl) {
+      this.videoEl.onplay = null;
+      if (this.videoEl.srcObject) {
+        try {
+          this.videoEl.srcObject.getTracks().forEach(t => t.stop());
+        } catch (_) {}
+        this.videoEl.srcObject = null;
+      }
+      this.videoEl.removeAttribute('src');
+      try {
+        this.videoEl.load();
+      } catch (_) {}
+    }
+  }
+
   stop(nextStreamPath = null) {
     const prevPath = this.activeStreamData?.stream_path || this.currentFeed?.stream_path;
     // 1. Abort any in-flight fetch requests immediately
@@ -309,6 +357,9 @@ class StreamPlayer {
     this.currentFeedTorRouted = false;
     this.isHlsMode = false;
     this.activeStreamData = null;
+    this.activeHlsPath = null;
+    this.forceHlsFixRequested = false;
+    this.hlsNetworkRetries = 0;
 
     // 3. Clear Isolated Portal card & source preview
     if (this.webConsoleDisplay) {
@@ -330,20 +381,13 @@ class StreamPlayer {
       this.snapshotEl.style.display = 'none';
     }
 
-    // 5. Detach MediaMTX WebRTC frame
+    // 5. Tear down native HLS/WebRTC engines and legacy iframe
     if (this.webrtcFrame) {
       this.webrtcFrame.src = 'about:blank';
       this.webrtcFrame.style.display = 'none';
     }
-
-    // 6. Reset HTML5 video element fallback
-    if (this.videoEl && this.videoEl.srcObject) {
-      this.videoEl.srcObject.getTracks().forEach(t => t.stop());
-      this.videoEl.srcObject = null;
-    }
+    this.teardownMediaEngines();
     if (this.videoEl) {
-      this.videoEl.removeAttribute('src');
-      this.videoEl.load();
       this.videoEl.style.display = 'none';
     }
 
@@ -750,23 +794,25 @@ class StreamPlayer {
         return;
       }
 
-      // Embed MediaMTX player frame (in HLS mode, wait for hlsmuxer/sidecar readiness before loading iframe to avoid HTTP 500 manifest errors)
-      if (this.webrtcFrame) {
+      // Start MediaMTX RTSP playback via native <video> (HLS over same-origin /api/hls or WebRTC over /api/whep with auto-fallback)
+      if (this.videoEl) {
         if (this.connectTimeoutTimer) {
           clearTimeout(this.connectTimeoutTimer);
           this.connectTimeoutTimer = null;
         }
         this.activeStreamData = streamData;
-        const useHlsDirectly = (streamData.playback_mode === 'hls' || !streamData.webrtc_url) && Boolean(streamData.hls_url);
+        const isHttpsPage = window.location.protocol === 'https:';
+        const useHlsDirectly = streamData.playback_mode === 'hls' || isHttpsPage || !streamData.webrtc_url;
         this.isHlsMode = useHlsDirectly;
-        if (!useHlsDirectly) {
-          this.webrtcFrame.src = `${streamData.webrtc_url}/?autoplay=true&muted=true`;
-        } else {
-          this.webrtcFrame.src = 'about:blank';
-          this.webrtcFrame.style.display = 'none';
-          this.setStatus('CONNECTING', 'Initializing HLS segments and audio pipeline...');
-        }
-        this.monitorRtspTelemetry(streamData.stream_path, targetId, feed, isAltRtsp);
+        this.activeHlsPath = null;
+        this.forceHlsFixRequested = false;
+        this.setStatus(
+          'CONNECTING',
+          useHlsDirectly
+            ? 'Initializing HLS segments and audio pipeline...'
+            : 'Negotiating low-latency WebRTC media stream...'
+        );
+        this.monitorRtspTelemetry(streamData.stream_path, targetId, feed, isAltRtsp, false);
       }
     } catch (err) {
       if (err.name === 'AbortError') {
@@ -791,7 +837,254 @@ class StreamPlayer {
     }
   }
 
-  monitorRtspTelemetry(streamName, targetId, feed, isAltRtsp) {
+  attachHlsStream(hlsStreamPath, targetId, feed, isAltRtsp) {
+    if (!this.videoEl || this.activeFeedId !== targetId) return;
+    if (this.activeHlsPath === hlsStreamPath && this.hlsInstance) return;
+
+    this.teardownMediaEngines();
+    this.isHlsMode = true;
+    this.activeHlsPath = hlsStreamPath;
+    this.hlsNetworkRetries = 0;
+
+    const manifestUrl = `/api/hls/${encodeURIComponent(hlsStreamPath)}/index.m3u8`;
+    this.videoEl.muted = true;
+    this.videoEl.autoplay = true;
+    this.videoEl.playsInline = true;
+    this.videoEl.controls = true;
+
+    if (window.Hls && window.Hls.isSupported()) {
+      const hls = new window.Hls({
+        lowLatencyMode: true,
+        liveSyncDurationCount: 2,
+        liveMaxLatencyDurationCount: 6,
+        maxLiveSyncPlaybackRate: 1.5,
+        enableWorker: true,
+        manifestLoadingMaxRetry: 6,
+        manifestLoadingRetryDelay: 700,
+        levelLoadingMaxRetry: 6,
+        fragLoadingMaxRetry: 6,
+      });
+      this.hlsInstance = hls;
+
+      hls.on(window.Hls.Events.MEDIA_ATTACHED, () => {
+        if (this.activeFeedId === targetId && this.hlsInstance === hls) {
+          hls.loadSource(manifestUrl);
+        }
+      });
+
+      hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+        if (this.activeFeedId === targetId && this.hlsInstance === hls && this.videoEl) {
+          this.videoEl.play().catch(() => {});
+        }
+      });
+
+      hls.on(window.Hls.Events.ERROR, (_evt, data) => {
+        if (this.activeFeedId !== targetId || this.hlsInstance !== hls || !data?.fatal) return;
+        console.warn('HLS fatal error:', data.type, data.details, data.response?.code);
+
+        // Browser lacks native HEVC/H.265 decoder: transparently transcode to H.264 + AAC on backend
+        if (
+          data.details === 'manifestIncompatibleCodecsError' &&
+          !this.forceHlsFixRequested &&
+          this.activeStreamData?.stream_path
+        ) {
+          this.forceHlsFixRequested = true;
+          this.activeHlsPath = null;
+          this.teardownMediaEngines();
+          this.setStatus('CONNECTING', 'Browser lacks native codec support — transcoding to H.264/AAC...');
+          this.monitorRtspTelemetry(this.activeStreamData.stream_path, targetId, feed, isAltRtsp, true);
+          return;
+        }
+
+        if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError();
+          return;
+        }
+
+        if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && this.hlsNetworkRetries < 5) {
+          this.hlsNetworkRetries++;
+          setTimeout(() => {
+            if (this.activeFeedId === targetId && this.hlsInstance === hls) {
+              hls.startLoad();
+            }
+          }, 900);
+          return;
+        }
+
+        // Last-resort recovery via backend H.264/AAC transcode sidecar if on raw path
+        if (
+          !this.forceHlsFixRequested &&
+          this.activeStreamData?.stream_path &&
+          !hlsStreamPath.endsWith('_aac')
+        ) {
+          this.forceHlsFixRequested = true;
+          this.activeHlsPath = null;
+          this.teardownMediaEngines();
+          this.setStatus('CONNECTING', 'Recovering stream via H.264/AAC compatibility pipeline...');
+          this.monitorRtspTelemetry(this.activeStreamData.stream_path, targetId, feed, isAltRtsp, true);
+          return;
+        }
+
+        this.setStatus('RTSP OFFLINE', 'HLS stream interrupted or camera disconnected.');
+      });
+
+      this.videoEl.onplay = () => {
+        if (this.hlsInstance === hls && hls.liveSyncPosition && isFinite(hls.liveSyncPosition)) {
+          if (Math.abs(hls.liveSyncPosition - this.videoEl.currentTime) > 4) {
+            this.videoEl.currentTime = hls.liveSyncPosition;
+          }
+        }
+      };
+
+      hls.attachMedia(this.videoEl);
+    } else if (this.videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+      this.videoEl.src = manifestUrl;
+      this.videoEl.play().catch(() => {});
+    } else {
+      this.setStatus('RTSP OFFLINE', 'Browser does not support HLS playback.');
+    }
+  }
+
+  async attachWebRtcStream(streamPath, targetId, feed, isAltRtsp) {
+    if (!this.videoEl || this.activeFeedId !== targetId) return;
+    if (typeof RTCPeerConnection === 'undefined') {
+      this.isHlsMode = true;
+      this.monitorRtspTelemetry(streamPath, targetId, feed, isAltRtsp, false);
+      return;
+    }
+
+    this.teardownMediaEngines();
+    this.isHlsMode = false;
+    this.videoEl.muted = true;
+    this.videoEl.autoplay = true;
+    this.videoEl.playsInline = true;
+    this.videoEl.controls = true;
+
+    let fellBack = false;
+    const fallbackToHls = (reason) => {
+      if (fellBack || this.activeFeedId !== targetId || this.isHlsMode) return;
+      fellBack = true;
+      console.warn(`WebRTC -> HLS automatic fallback (${reason})`);
+      this.teardownMediaEngines();
+      this.isHlsMode = true;
+      this.activeHlsPath = null;
+      this.setStatus('CONNECTING', 'WebRTC media blocked — switching seamlessly to HLS...');
+      this.monitorRtspTelemetry(streamPath, targetId, feed, isAltRtsp, false);
+    };
+
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      this.peerConnection = pc;
+      pc.addTransceiver('video', { direction: 'recvonly' });
+      pc.addTransceiver('audio', { direction: 'recvonly' });
+
+      const mediaStream = new MediaStream();
+      pc.ontrack = (evt) => {
+        if (this.activeFeedId !== targetId || this.peerConnection !== pc) return;
+        if (evt.streams && evt.streams[0]) {
+          this.videoEl.srcObject = evt.streams[0];
+        } else {
+          mediaStream.addTrack(evt.track);
+          this.videoEl.srcObject = mediaStream;
+        }
+        this.videoEl.play().catch(() => {});
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (this.peerConnection !== pc) return;
+        if (pc.iceConnectionState === 'failed') {
+          fallbackToHls('ICE connection failed');
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (this.peerConnection !== pc) return;
+        if (pc.connectionState === 'failed') {
+          fallbackToHls('PeerConnection failed');
+        }
+      };
+
+      const pendingCandidates = [];
+      let sessionEtag = '*';
+      const sendIcePatch = (cand) => {
+        if (!this.whepSessionUrl || !cand?.candidate) return;
+        const sdpFrag = `a=ice-ufrag:${cand.usernameFragment || ''}\r\na=candidate:${cand.candidate}\r\n`;
+        fetch(this.whepSessionUrl, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/trickle-ice-sdpfrag',
+            'If-Match': sessionEtag
+          },
+          body: sdpFrag
+        }).catch(() => {});
+      };
+
+      pc.onicecandidate = (evt) => {
+        if (this.peerConnection !== pc || !evt.candidate) return;
+        if (this.whepSessionUrl) {
+          sendIcePatch(evt.candidate);
+        } else {
+          pendingCandidates.push(evt.candidate);
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      // Briefly wait up to 350ms for host ICE candidates so single-request WHEP succeeds immediately
+      await new Promise((resolve) => {
+        if (pc.iceGatheringState === 'complete') return resolve();
+        const done = () => {
+          pc.removeEventListener('icegatheringstatechange', onState);
+          resolve();
+        };
+        const onState = () => {
+          if (pc.iceGatheringState === 'complete') done();
+        };
+        pc.addEventListener('icegatheringstatechange', onState);
+        setTimeout(done, 350);
+      });
+
+      if (this.activeFeedId !== targetId || this.peerConnection !== pc) return;
+
+      const whepUrl = this.activeStreamData?.proxy_whep_url || `/api/whep/${encodeURIComponent(streamPath)}`;
+      const res = await fetch(whepUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/sdp' },
+        body: pc.localDescription.sdp,
+        signal: this.abortController ? this.abortController.signal : undefined
+      });
+
+      if (this.activeFeedId !== targetId || this.peerConnection !== pc) return;
+      if (!res.ok) {
+        fallbackToHls(`WHEP HTTP ${res.status}`);
+        return;
+      }
+
+      const loc = res.headers.get('location');
+      if (loc) this.whepSessionUrl = loc;
+      sessionEtag = res.headers.get('etag') || '*';
+      const answerSdp = await res.text();
+      await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+      while (pendingCandidates.length) {
+        sendIcePatch(pendingCandidates.shift());
+      }
+
+      // If WebRTC delivers 0 rendered video frames within 3.5s (e.g. port 8189 blocked), auto-fallback to HLS
+      this.whepFallbackTimer = setTimeout(() => {
+        if (this.activeFeedId !== targetId || this.isHlsMode || this.peerConnection !== pc) return;
+        if (!this.videoEl || this.videoEl.videoWidth === 0) {
+          fallbackToHls('0 video frames after 3.5s');
+        }
+      }, 3500);
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      fallbackToHls(err?.message || 'WebRTC setup error');
+    }
+  }
+
+  monitorRtspTelemetry(streamName, targetId, feed, isAltRtsp, initialForceFix = false) {
     if (this.telemetryInterval) {
       clearInterval(this.telemetryInterval);
       this.telemetryInterval = null;
@@ -800,18 +1093,11 @@ class StreamPlayer {
     let attempts = 0;
     const maxAttempts = this.currentFeedTorRouted ? 20 : 12; // Verify every 900ms (~18s over Tor, ~10.8s direct)
     let streamVerified = false;
-    let frameLoaded = !this.isHlsMode;
+    let playbackStarted = false;
     let aacWaitPolls = 0;
     let hlsMuxWaitPolls = 0;
     let aacSwitched = false;
-    let forceHlsFix = false;
-
-    const buildAacHlsUrl = (aacPath) => {
-      const hlsRoot = (this.activeStreamData?.hls_url || '').replace(/\/+$/, '');
-      const baseParts = hlsRoot.split('/');
-      baseParts[baseParts.length - 1] = aacPath;
-      return `${baseParts.join('/')}/?autoplay=true&muted=true`;
-    };
+    let forceHlsFix = Boolean(initialForceFix);
 
     this.telemetryInterval = setInterval(async () => {
       // If user switched camera in the meantime, terminate poller
@@ -824,8 +1110,8 @@ class StreamPlayer {
       attempts++;
       try {
         const statusUrl = this.isHlsMode
-          ? `/api/streams/status/${streamName}?hls_audio=true${forceHlsFix ? '&force_hls_fix=true' : ''}`
-          : `/api/streams/status/${streamName}`;
+          ? `/api/streams/status/${encodeURIComponent(streamName)}?hls_audio=true${forceHlsFix ? '&force_hls_fix=true' : ''}`
+          : `/api/streams/status/${encodeURIComponent(streamName)}`;
         const res = await fetch(statusUrl);
         if (this.activeFeedId !== targetId) return;
 
@@ -839,29 +1125,39 @@ class StreamPlayer {
 
             const codecUpper = (status.codec || '').toUpperCase();
             let switchedToHlsJustNow = false;
-            if ((codecUpper.includes('H265') || codecUpper.includes('HEVC')) && this.activeStreamData?.hls_url && !this.isHlsMode) {
+            const nonWebRtcVideo = (
+              codecUpper.includes('H265') ||
+              codecUpper.includes('HEVC') ||
+              codecUpper.includes('JPEG') ||
+              codecUpper.includes('MPEG-4 VIDEO') ||
+              codecUpper.includes('MPEG-1/2 VIDEO')
+            );
+            if (nonWebRtcVideo && !this.isHlsMode) {
               this.isHlsMode = true;
               switchedToHlsJustNow = true;
-              frameLoaded = false;
+              playbackStarted = false;
             }
 
             if (this.isHlsMode) {
-              // Wait briefly (up to 4 polls) for pending AAC sidecar so the iframe loads once cleanly with audio
-              const waitingOnSidecar = !status.aac_stream_path && status.aac_pending && aacWaitPolls < 4;
+              // When forceHlsFix is active, wait for the transcoded _aac sidecar directly
+              const waitingOnSidecar = !status.aac_stream_path && (
+                forceHlsFix || (status.aac_pending && aacWaitPolls < 4)
+              );
               const canLoadHlsNow = Boolean(status.aac_stream_path) || (Boolean(status.hls_ready) && !waitingOnSidecar);
 
-              if (!frameLoaded && !canLoadHlsNow && hlsMuxWaitPolls < 14) {
+              if (!playbackStarted && !canLoadHlsNow && hlsMuxWaitPolls < 14) {
                 hlsMuxWaitPolls++;
                 if (status.aac_pending) aacWaitPolls++;
-                // If native HLS muxer stays unavailable despite active bytes, trigger ffmpeg H.264 normalization
                 if (!status.hls_ready && !status.aac_pending && status.bytes_received > 0 && hlsMuxWaitPolls >= 4) {
                   forceHlsFix = true;
                 }
                 this.setStatus(
                   'CONNECTING',
-                  status.aac_pending
-                    ? 'Preparing HLS stream with compatible AAC audio...'
-                    : 'Buffering first HLS video keyframe...'
+                  forceHlsFix
+                    ? 'Transcoding video & audio to browser-compatible H.264/AAC...'
+                    : (status.aac_pending
+                      ? 'Preparing HLS stream with compatible AAC audio...'
+                      : 'Buffering first HLS video keyframe...')
                 );
                 return;
               }
@@ -869,22 +1165,25 @@ class StreamPlayer {
 
             if (this.overlayEl) this.overlayEl.style.display = 'none';
             if (this.snapshotEl) this.snapshotEl.style.display = 'none';
-            if (this.videoEl) this.videoEl.style.display = 'none';
-            if (this.webrtcFrame) this.webrtcFrame.style.display = 'block';
+            if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
+            if (this.videoEl) this.videoEl.style.display = 'block';
 
             this.setStatus(this.isHlsMode ? 'LIVE HLS' : 'LIVE WEBRTC');
 
             let aacSuffix = aacSwitched ? ' + AAC' : '';
-            if (this.isHlsMode && this.webrtcFrame && this.activeStreamData?.hls_url) {
+            if (this.isHlsMode) {
               if (!aacSwitched && status.aac_stream_path) {
-                this.webrtcFrame.src = buildAacHlsUrl(status.aac_stream_path);
-                frameLoaded = true;
+                this.attachHlsStream(status.aac_stream_path, targetId, feed, isAltRtsp);
+                playbackStarted = true;
                 aacSwitched = true;
-                aacSuffix = ' + AAC';
-              } else if (!frameLoaded) {
-                this.webrtcFrame.src = `${this.activeStreamData.hls_url}/?autoplay=true&muted=true`;
-                frameLoaded = true;
+                aacSuffix = forceHlsFix ? ' -> H264 + AAC' : ' + AAC';
+              } else if (!playbackStarted) {
+                this.attachHlsStream(streamName, targetId, feed, isAltRtsp);
+                playbackStarted = true;
               }
+            } else if (!playbackStarted) {
+              playbackStarted = true;
+              this.attachWebRtcStream(streamName, targetId, feed, isAltRtsp);
             }
 
             const resInfo = status.resolution ? ` [${status.resolution}]` : '';
@@ -902,7 +1201,7 @@ class StreamPlayer {
                 : `MediaMTX ${protoLabel} Verified: ${codecInfo}${aacSuffix}${resInfo}${byteInfo}`) + torSuffix;
             }
 
-            // Keep polling while HLS sidecar warms up (or right after an H265 upgrade to HLS)
+            // Keep polling while HLS sidecar warms up (or right after an H265/non-WebRTC upgrade to HLS)
             if (switchedToHlsJustNow || (this.isHlsMode && !aacSwitched && status.aac_pending && aacWaitPolls < 8)) {
               aacWaitPolls++;
               return;

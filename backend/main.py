@@ -1,4 +1,5 @@
 import os
+import re
 import html
 import json
 import logging
@@ -9,7 +10,7 @@ from urllib.parse import urlparse, urljoin, quote
 from fastapi import FastAPI, Depends, HTTPException, Query, Header, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse, Response, HTMLResponse, JSONResponse
 from sqlalchemy import select, func, or_, and_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
     # Shutdown: clean up background processes
     logger.info("Shutting down Tor bridges & MediaMTX...")
     await tor_service.shutdown()
+    await mediamtx_service.aclose()
     mediamtx_service.stop()
 
 app = FastAPI(
@@ -651,7 +653,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         current_works = False
         if rtsp_url and parsed_p and parsed_p not in ("/", "/live", "/onvif1"):
             is_ok, code, target_url, realm, nonce = await rtsp_resolver.probe_rtsp_path(
-                feed.ip, feed.port, parsed_p, creds=existing_creds, timeout=0.8
+                feed.ip, feed.port, parsed_p, creds=existing_creds, timeout=2.2
             )
             if is_ok:
                 rtsp_url = target_url
@@ -716,6 +718,11 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         stream_path = f"stream_{abs(hash(rtsp_url)) % 1000000}"
 
     route_info = await mediamtx_service.register_stream(stream_path, rtsp_url)
+
+    # Auto-detect HTTPS reverse-proxy deployments even when .env leaves MEDIAMTX_HLS_URL at localhost
+    req_proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip().lower()
+    if (settings.MEDIAMTX_PLAYBACK_MODE or "auto").strip().lower() == "auto" and req_proto == "https":
+        route_info["playback_mode"] = "hls"
 
     # Dynamic host resolution for direct LAN/IP access without a reverse proxy:
     # Rewrite 'localhost' or '127.0.0.1' with the host IP/domain used by the client.
@@ -1291,6 +1298,62 @@ async def stop_stream_route(payload: Dict[str, Any]):
     if stream_name:
         await mediamtx_service.stop_stream(stream_name)
     return {"status": "stopped", "stream_name": stream_name}
+
+
+_SAFE_HLS_FILE_RE = re.compile(r"^[a-zA-Z0-9_.\-]{1,128}$")
+
+
+@app.get("/api/hls/{stream_path}/{file_name}")
+async def proxy_hls_media(stream_path: str, file_name: str, request: Request):
+    """
+    Same-origin HLS proxy to MediaMTX (:8888).
+    Eliminates Nginx /hls/ prefix-stripping, mixed-content blocks, CORS, and cookieCheck redirect loops.
+    """
+    safe_stream = validate_safe_identifier(stream_path, "stream_path")
+    if not _SAFE_HLS_FILE_RE.match(file_name) or ".." in file_name:
+        raise HTTPException(status_code=400, detail="Invalid HLS segment filename")
+    try:
+        content, status_code, headers = await mediamtx_service.proxy_hls_file(
+            safe_stream, file_name, request.url.query or ""
+        )
+        return Response(content=content, status_code=status_code, headers=headers)
+    except Exception as e:
+        if settings.STREAM_DEBUG:
+            logger.debug(f"[STREAM_DEBUG] HLS proxy error for {safe_stream}/{file_name}: {e}")
+        raise HTTPException(status_code=502, detail="MediaMTX HLS gateway unreachable")
+
+
+@app.api_route("/api/whep/{stream_path}", methods=["POST", "OPTIONS"])
+async def proxy_whep_start(stream_path: str, request: Request):
+    """Same-origin WebRTC WHEP offer/answer signaling proxy to MediaMTX (:8889)."""
+    safe_stream = validate_safe_identifier(stream_path, "stream_path")
+    body = await request.body()
+    try:
+        content, status_code, headers = await mediamtx_service.proxy_whep(
+            request.method, safe_stream, None, body, dict(request.headers)
+        )
+        return Response(content=content, status_code=status_code, headers=headers)
+    except Exception as e:
+        if settings.STREAM_DEBUG:
+            logger.debug(f"[STREAM_DEBUG] WHEP start proxy error for {safe_stream}: {e}")
+        raise HTTPException(status_code=502, detail="MediaMTX WebRTC gateway unreachable")
+
+
+@app.api_route("/api/whep/{stream_path}/{session_id}", methods=["PATCH", "DELETE", "OPTIONS"])
+async def proxy_whep_session_route(stream_path: str, session_id: str, request: Request):
+    """Same-origin WebRTC WHEP ICE-trickle (PATCH) and session teardown (DELETE) proxy."""
+    safe_stream = validate_safe_identifier(stream_path, "stream_path")
+    safe_session = validate_safe_identifier(session_id, "session_id")
+    body = await request.body()
+    try:
+        content, status_code, headers = await mediamtx_service.proxy_whep(
+            request.method, safe_stream, safe_session, body, dict(request.headers)
+        )
+        return Response(content=content, status_code=status_code, headers=headers)
+    except Exception as e:
+        if settings.STREAM_DEBUG:
+            logger.debug(f"[STREAM_DEBUG] WHEP session proxy error for {safe_stream}/{safe_session}: {e}")
+        raise HTTPException(status_code=502, detail="MediaMTX WebRTC gateway unreachable")
 
 @app.post("/api/streams/resolve-rtsp", response_model=ResolveRtspResponse)
 async def resolve_camera_rtsp(

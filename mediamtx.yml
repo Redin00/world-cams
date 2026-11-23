@@ -29,7 +29,7 @@ hlsAlwaysRemux: true
 hlsVariant: lowLatency
 hlsSegmentCount: 7
 hlsSegmentDuration: 1s
-hlsPartDuration: 200ms
+hlsPartDuration: 500ms
 
 # ------------------------------------------
 # WebRTC (Ultra Low Latency WHEP)

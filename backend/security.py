@@ -649,13 +649,14 @@ class SecurityWAFMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Forbidden: Automated scanner blocked."}
             )
 
-        # 3. Rate Limiting Check
-        if not rate_limiter.check_general_rate(client_ip):
-            logger.warning(f"[WAF] Rate limit exceeded for {client_ip}")
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "Too Many Requests: Rate limit exceeded. Please slow down."}
-            )
+        # 3. Rate Limiting Check (exempt read-only HLS media chunks from the 360/min API cap)
+        if not (request.method == "GET" and path.startswith("/api/hls/")):
+            if not rate_limiter.check_general_rate(client_ip):
+                logger.warning(f"[WAF] Rate limit exceeded for {client_ip}")
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too Many Requests: Rate limit exceeded. Please slow down."}
+                )
 
         # 4. Inspect Query Parameters & Path for SQLi, XSS, and Command Injection
         inspection_target = f"{decoded_path}?{decoded_query}" if decoded_query else decoded_path
@@ -713,6 +714,7 @@ class SecurityWAFMiddleware(BaseHTTPMiddleware):
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
                 "script-src 'self' https://unpkg.com https://cdn.jsdelivr.net; "
+                "worker-src 'self' blob:; "
                 "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; "
                 "font-src 'self' https://fonts.gstatic.com data:; "
                 "img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://*.openstreetmap.org https://images.unsplash.com; "

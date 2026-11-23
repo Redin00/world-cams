@@ -86,6 +86,8 @@ class StreamResponse(BaseModel):
     tor_routed: bool = False
     tor_circuit_id: Optional[str] = None
     playback_mode: Optional[str] = "webrtc"
+    proxy_hls_url: Optional[str] = None
+    proxy_whep_url: Optional[str] = None
 
 class ResolveRtspRequest(BaseModel):
     feed_id: Optional[str] = None
