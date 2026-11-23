@@ -5,6 +5,8 @@
 
 logLevel: info
 logDestinations: [stdout]
+readTimeout: 25s
+writeTimeout: 25s
 
 # ------------------------------------------
 # Control API (Used by FastAPI backend)

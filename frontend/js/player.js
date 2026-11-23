@@ -664,6 +664,7 @@ class StreamPlayer {
     this.snapshotEl.src = fallbackThumb;
 
     // Safety timeout: if backend /api/streams/play hangs, attempt fallback vendor resolution
+    const connectTimeoutMs = window.app?.torStatus?.enabled ? 60000 : 25000;
     this.connectTimeoutTimer = setTimeout(async () => {
       if (this.activeFeedId !== targetId) return;
       if (this.badgeEl && this.badgeEl.textContent.includes('CONNECTING')) {
@@ -729,7 +730,7 @@ class StreamPlayer {
           if (this.techProto) this.techProto.textContent = `WAN Port ${portNum} Unreachable`;
         }
       }
-    }, 20000);
+    }, connectTimeoutMs);
 
     try {
       const res = await fetch('/api/streams/play', {

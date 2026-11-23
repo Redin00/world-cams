@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse, quote, unquote
 
 import httpx
 from fastapi import HTTPException
@@ -175,8 +175,15 @@ class MediaMTXService:
             effective_source = rtsp_url
             if cam_ip and tor_service.should_route_via_tor(cam_ip):
                 await tor_service._require_socks_ready()
+                rtsp_user = unquote(parsed_src.username) if parsed_src.username is not None else None
+                rtsp_pass = unquote(parsed_src.password) if parsed_src.password is not None else None
                 bridge_port = await tor_service.ensure_rtsp_bridge(
-                    clean_path, cam_ip, cam_port, circuit_key=clean_path
+                    clean_path,
+                    cam_ip,
+                    cam_port,
+                    circuit_key=clean_path,
+                    rtsp_username=rtsp_user,
+                    rtsp_password=rtsp_pass,
                 )
                 auth_prefix = ""
                 if parsed_src.username is not None:

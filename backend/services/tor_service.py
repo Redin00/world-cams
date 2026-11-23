@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import ipaddress
 import logging
 import re
@@ -9,7 +10,7 @@ import struct
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 from urllib.parse import urlparse
 
 import httpx
@@ -436,12 +437,93 @@ class TorProxyService:
                 pass
             raise
 
+    @staticmethod
+    def _rewrite_rtsp_c2r(
+        data: bytes,
+        local_variants: List[bytes],
+        remote_host_port: bytes,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> bytes:
+        """
+        Rewrite local bridge host:port in outgoing RTSP control requests to the remote camera host:port,
+        leaving binary RTP/RTCP interleaved frames (`$`) untouched and recomputing Digest auth if present.
+        """
+        if not data or data[:1] == b"$":
+            return data
+        if not any(lv in data for lv in local_variants):
+            return data
+
+        has_digest = bool(re.search(rb"(?i)Authorization:\s*Digest\b", data))
+        if has_digest and username is None:
+            return data
+
+        rewritten = data
+        for lv in local_variants:
+            if lv in rewritten:
+                rewritten = rewritten.replace(lv, remote_host_port)
+
+        if not has_digest:
+            return rewritten
+
+        text = rewritten.decode("latin-1")
+        method_m = re.match(r"^([A-Z_]+)\s+", text)
+        method = method_m.group(1) if method_m else "DESCRIBE"
+
+        def _recompute_auth_line(match: re.Match) -> str:
+            line = match.group(0)
+            realm_m = re.search(r'realm="([^"]*)"', line, re.IGNORECASE)
+            nonce_m = re.search(r'nonce="([^"]+)"', line, re.IGNORECASE)
+            uri_m = re.search(r'uri="([^"]+)"', line, re.IGNORECASE)
+            resp_m = re.search(r'response="([a-fA-F0-9]+)"', line, re.IGNORECASE)
+            if not (realm_m and nonce_m and uri_m and resp_m):
+                return line
+
+            realm = realm_m.group(1)
+            nonce = nonce_m.group(1)
+            uri = uri_m.group(1)
+            alg_m = re.search(r'algorithm=([^,\s"]+)', line, re.IGNORECASE)
+            alg = (alg_m.group(1) if alg_m else "MD5").upper()
+            hash_fn = hashlib.sha256 if alg.startswith("SHA-256") else hashlib.md5
+
+            ha1 = hash_fn(f"{username}:{realm}:{password or ''}".encode("utf-8")).hexdigest()
+            ha2 = hash_fn(f"{method}:{uri}".encode("utf-8")).hexdigest()
+
+            qop_m = re.search(r'qop=([^,\s"]+|"[^"]+")', line, re.IGNORECASE)
+            nc_m = re.search(r'nc=([^,\s"]+)', line, re.IGNORECASE)
+            cnonce_m = re.search(r'cnonce="([^"]+)"', line, re.IGNORECASE)
+
+            if qop_m and nc_m and cnonce_m:
+                qop_val = qop_m.group(1).strip('"')
+                new_resp = hash_fn(
+                    f"{ha1}:{nonce}:{nc_m.group(1)}:{cnonce_m.group(1)}:{qop_val}:{ha2}".encode("utf-8")
+                ).hexdigest()
+            else:
+                new_resp = hash_fn(f"{ha1}:{nonce}:{ha2}".encode("utf-8")).hexdigest()
+
+            return re.sub(
+                r'response="[a-fA-F0-9]+"',
+                f'response="{new_resp}"',
+                line,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+
+        recomputed = re.sub(
+            r"(?im)^Authorization:\s*Digest\b[^\r\n]*",
+            _recompute_auth_line,
+            text,
+        )
+        return recomputed.encode("latin-1")
+
     async def ensure_rtsp_bridge(
         self,
         stream_path: str,
         cam_ip: str,
         cam_port: int,
         circuit_key: Optional[str] = None,
+        rtsp_username: Optional[str] = None,
+        rtsp_password: Optional[str] = None,
     ) -> int:
         """
         Start (or reuse) a local loopback TCP-to-SOCKS5 RTSP bridge for MediaMTX so
@@ -455,6 +537,8 @@ class TorProxyService:
                 and existing.get("cam_ip") == cam_ip
                 and existing.get("cam_port") == int(cam_port)
                 and existing.get("circuit_generation") == self.circuit_generation
+                and existing.get("rtsp_username") == rtsp_username
+                and existing.get("rtsp_password") == rtsp_password
                 and existing.get("server")
                 and existing["server"].is_serving()
             ):
@@ -479,7 +563,7 @@ class TorProxyService:
                     remote_reader, remote_writer = await self.open_connection(
                         cam_ip,
                         int(cam_port),
-                        timeout=12.0,
+                        timeout=18.0,
                         circuit_key=circuit_key or clean_path,
                     )
 
@@ -489,11 +573,14 @@ class TorProxyService:
                                 data = await client_reader.read(65536)
                                 if not data:
                                     break
-                                # Rewrite local loopback RTSP target host/port to remote camera host/port
                                 if local_port_val:
-                                    for lv in local_variants:
-                                        if lv in data:
-                                            data = data.replace(lv, remote_host_port)
+                                    data = self._rewrite_rtsp_c2r(
+                                        data,
+                                        local_variants,
+                                        remote_host_port,
+                                        rtsp_username,
+                                        rtsp_password,
+                                    )
                                 remote_writer.write(data)
                                 await remote_writer.drain()
                         except Exception:
@@ -543,6 +630,8 @@ class TorProxyService:
                 "cam_ip": cam_ip,
                 "cam_port": int(cam_port),
                 "circuit_generation": self.circuit_generation,
+                "rtsp_username": rtsp_username,
+                "rtsp_password": rtsp_password,
             }
             logger.info(
                 f"[TOR BRIDGE] Started RTSP-over-SOCKS5 bridge 127.0.0.1:{local_port} "

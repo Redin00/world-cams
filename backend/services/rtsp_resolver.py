@@ -3,6 +3,7 @@ import base64
 import hashlib
 import logging
 import re
+import secrets
 from typing import Optional, List, Tuple, Dict, Any, Callable, Awaitable
 from urllib.parse import urlparse, urljoin
 import httpx
@@ -581,10 +582,63 @@ class VendorRtspResolver:
         return False, f"rtsp://{ip}:{port}{fallback_path}", None
 
     @staticmethod
-    def _compute_digest(method: str, uri: str, user: str, pwd: str, realm: str, nonce: str) -> str:
-        """Compute RFC 2069 / RFC 2617 standard RTSP Digest Authentication header."""
+    def _is_rtsp_200(resp_str: str) -> bool:
+        return bool(re.match(r"^RTSP/\d\.\d\s+200\b", resp_str or ""))
+
+    @staticmethod
+    def _is_rtsp_401(resp_str: str) -> bool:
+        return bool(re.match(r"^RTSP/\d\.\d\s+401\b", resp_str or ""))
+
+    @staticmethod
+    async def _read_rtsp_headers(
+        reader: asyncio.StreamReader,
+        timeout: float,
+        max_bytes: int = 4096,
+    ) -> str:
+        """Read RTSP response headers cleanly even when split across multiple TCP segments (common over Tor)."""
+        buf = b""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(float(timeout), 0.1)
+        while len(buf) < max_bytes:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                chunk = await asyncio.wait_for(reader.read(min(1024, max_bytes - len(buf))), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            if b"\r\n\r\n" in buf or b"\n\n" in buf:
+                break
+        return buf.decode(errors="ignore")
+
+    @staticmethod
+    def _compute_digest(
+        method: str,
+        uri: str,
+        user: str,
+        pwd: str,
+        realm: str,
+        nonce: str,
+        qop: Optional[str] = None,
+        cnonce: Optional[str] = None,
+        nc: str = "00000001",
+    ) -> str:
+        """Compute RFC 2069 / RFC 2617 RTSP Digest Authentication header (supporting optional qop=auth)."""
         ha1 = hashlib.md5(f"{user}:{realm}:{pwd}".encode("utf-8")).hexdigest()
         ha2 = hashlib.md5(f"{method}:{uri}".encode("utf-8")).hexdigest()
+        qop_tokens = [t.strip().lower() for t in (qop or "").split(",") if t.strip()]
+        if "auth" in qop_tokens:
+            active_cnonce = cnonce or secrets.token_hex(8)
+            resp = hashlib.md5(
+                f"{ha1}:{nonce}:{nc}:{active_cnonce}:auth:{ha2}".encode("utf-8")
+            ).hexdigest()
+            return (
+                f'Digest username="{user}", realm="{realm}", nonce="{nonce}", uri="{uri}", '
+                f'qop=auth, nc={nc}, cnonce="{active_cnonce}", response="{resp}"'
+            )
         resp = hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode("utf-8")).hexdigest()
         return f'Digest username="{user}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{resp}"'
 
@@ -598,7 +652,8 @@ class VendorRtspResolver:
     ) -> Tuple[bool, int, str, Optional[str], Optional[str]]:
         """
         Lightweight async socket probe using RTSP DESCRIBE.
-        Handles unauthenticated access, RFC standard RTSP Digest Authentication, and Basic Authentication.
+        Handles unauthenticated access, RFC standard RTSP Digest Authentication (with or without qop=auth),
+        and Basic Authentication.
         Returns (is_success, http_code, target_rtsp_url, realm, nonce).
         """
         uri = f"rtsp://{host}:{port}{path}"
@@ -611,7 +666,7 @@ class VendorRtspResolver:
             f"Accept: application/sdp\r\n\r\n"
         )
 
-        eff_timeout = max(timeout, 6.0) if tor_service.should_route_via_tor(host) else timeout
+        eff_timeout = max(timeout, 8.5) if tor_service.should_route_via_tor(host) else timeout
 
         try:
             reader, writer = await tor_service.open_connection(
@@ -623,10 +678,9 @@ class VendorRtspResolver:
             writer.write(req_initial.encode())
             await writer.drain()
 
-            raw_resp = await asyncio.wait_for(reader.read(1024), timeout=eff_timeout)
-            resp_str = raw_resp.decode(errors="ignore")
+            resp_str = await self._read_rtsp_headers(reader, eff_timeout)
 
-            if resp_str.startswith("RTSP/1.0 200"):
+            if self._is_rtsp_200(resp_str):
                 writer.close()
                 try:
                     await writer.wait_closed()
@@ -635,21 +689,24 @@ class VendorRtspResolver:
                 resolved_url = f"rtsp://{creds[0]}:{creds[1]}@{host}:{port}{path}" if creds else uri
                 return True, 200, resolved_url, None, None
 
-            # If rejected with 401 Unauthorized, extract Digest realm and nonce (or Basic realm)
-            realm, nonce = None, None
-            if "401 Unauthorized" in resp_str:
+            # If rejected with 401 Unauthorized, extract Digest realm, nonce, and optional qop
+            realm, nonce, qop = None, None, None
+            if self._is_rtsp_401(resp_str):
                 realm_m = re.search(r'realm="([^"]*)"', resp_str, re.IGNORECASE)
                 nonce_m = re.search(r'nonce="([^"]+)"', resp_str, re.IGNORECASE)
+                qop_m = re.search(r'qop="([^"]+)"', resp_str, re.IGNORECASE)
                 if realm_m:
                     realm = realm_m.group(1)
                 if nonce_m:
                     nonce = nonce_m.group(1)
+                if qop_m:
+                    qop = qop_m.group(1)
 
                 # If creds provided, perform Digest or Basic Auth handshake
                 if creds:
                     user, pwd = creds
                     if realm is not None and nonce is not None:
-                        auth_hdr = self._compute_digest("DESCRIBE", uri, user, pwd, realm, nonce)
+                        auth_hdr = self._compute_digest("DESCRIBE", uri, user, pwd, realm, nonce, qop=qop)
                     else:
                         token = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("utf-8")
                         auth_hdr = f"Basic {token}"
@@ -665,8 +722,7 @@ class VendorRtspResolver:
                     try:
                         writer.write(req_auth.encode())
                         await writer.drain()
-                        raw_auth = await asyncio.wait_for(reader.read(1024), timeout=eff_timeout)
-                        resp_auth = raw_auth.decode(errors="ignore")
+                        resp_auth = await self._read_rtsp_headers(reader, eff_timeout)
                     except Exception:
                         resp_auth = ""
 
@@ -676,7 +732,7 @@ class VendorRtspResolver:
                     except Exception:
                         pass
 
-                    if resp_auth.startswith("RTSP/1.0 200"):
+                    if self._is_rtsp_200(resp_auth):
                         auth_url = f"rtsp://{user}:{pwd}@{host}:{port}{path}"
                         return True, 200, auth_url, realm, nonce
 
@@ -738,7 +794,7 @@ class VendorRtspResolver:
             f"User-Agent: {user_agent}\r\n"
             f"Accept: application/sdp\r\n\r\n"
         )
-        eff_timeout = max(timeout, 6.0) if tor_service.should_route_via_tor(host) else timeout
+        eff_timeout = max(timeout, 8.5) if tor_service.should_route_via_tor(host) else timeout
         try:
             reader, writer = await tor_service.open_connection(
                 host,
@@ -748,10 +804,9 @@ class VendorRtspResolver:
             )
             writer.write(req.encode())
             await writer.drain()
-            raw = await asyncio.wait_for(reader.read(1024), timeout=eff_timeout)
-            resp = raw.decode(errors="ignore")
+            resp = await self._read_rtsp_headers(reader, eff_timeout)
 
-            if resp.startswith("RTSP/1.0 200"):
+            if self._is_rtsp_200(resp):
                 writer.close()
                 try:
                     await writer.wait_closed()
@@ -760,14 +815,18 @@ class VendorRtspResolver:
                 return True, f"rtsp://{user}:{pwd}@{host}:{port}{path}"
 
             # If server challenged on CSeq: 1, authenticate on CSeq: 2
-            if "401 Unauthorized" in resp:
+            if self._is_rtsp_401(resp):
                 new_realm_m = re.search(r'realm="([^"]*)"', resp, re.IGNORECASE)
                 new_nonce_m = re.search(r'nonce="([^"]+)"', resp, re.IGNORECASE)
+                qop_m = re.search(r'qop="([^"]+)"', resp, re.IGNORECASE)
                 new_realm = new_realm_m.group(1) if new_realm_m else (realm or "")
                 active_nonce = new_nonce_m.group(1) if new_nonce_m else nonce
+                active_qop = qop_m.group(1) if qop_m else None
 
                 if active_nonce is not None:
-                    auth_hdr2 = self._compute_digest("DESCRIBE", uri, user, pwd, new_realm, active_nonce)
+                    auth_hdr2 = self._compute_digest(
+                        "DESCRIBE", uri, user, pwd, new_realm, active_nonce, qop=active_qop
+                    )
                     req2 = (
                         f"DESCRIBE {uri} RTSP/1.0\r\n"
                         f"CSeq: 2\r\n"
@@ -777,9 +836,8 @@ class VendorRtspResolver:
                     )
                     writer.write(req2.encode())
                     await writer.drain()
-                    raw2 = await asyncio.wait_for(reader.read(1024), timeout=eff_timeout)
-                    resp2 = raw2.decode(errors="ignore")
-                    if resp2.startswith("RTSP/1.0 200"):
+                    resp2 = await self._read_rtsp_headers(reader, eff_timeout)
+                    if self._is_rtsp_200(resp2):
                         writer.close()
                         try:
                             await writer.wait_closed()
@@ -912,6 +970,8 @@ class VendorRtspResolver:
         # Step 1A: Probe ALL candidate paths WITHOUT credentials first!
         # =====================================================================
         if not is_web_camera_port(port) and (port in (554, 8554, 10554, 5544, 7070, 7447, 37777) or "rtsp://" in current_url):
+            if tor_service.should_route_via_tor(ip):
+                candidate_paths = candidate_paths[:16]
             logger.info(f"Continuous RTSP probing (unauthenticated pass) for {ip}:{port} (Vendor: {vendor_key.upper()}, Candidates: {len(candidate_paths)})...")
 
             # Process candidate paths in moderate batches of 4 so low-end CCTV chips don't drop connections

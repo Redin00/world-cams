@@ -736,7 +736,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     .replace("http://127.0.0.1:", f"http://{client_host}:")
                 )
 
-    route_info["tor_routed"] = tor_service.enabled
+    route_info["tor_routed"] = bool(route_info.get("tor_routed"))
     route_info["tor_circuit_id"] = None
     return StreamResponse(**route_info)
 
