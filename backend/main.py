@@ -1262,17 +1262,24 @@ async def get_active_streams():
     return {"active_paths": paths}
 
 @app.get("/api/streams/status/{stream_name}")
-async def get_stream_status(stream_name: str, hls_audio: bool = Query(False)):
+async def get_stream_status(
+    stream_name: str,
+    hls_audio: bool = Query(False),
+    force_hls_fix: bool = Query(False),
+):
     """Real-time streaming transmission telemetry and health check."""
     safe_name = validate_safe_identifier(stream_name, "stream_name")
-    status_info = await mediamtx_service.get_path_status(safe_name)
+    status_info = await mediamtx_service.get_path_status(safe_name, check_hls=hls_audio)
+    tracks = status_info.get("tracks", [])
     if (
         hls_audio
         and status_info.get("ready")
-        and (status_info.get("bytes_received", 0) > 0 or bool(status_info.get("tracks")))
-        and mediamtx_service._needs_hls_sidecar(status_info.get("tracks", []))
+        and (status_info.get("bytes_received", 0) > 0 or bool(tracks))
+        and (force_hls_fix or mediamtx_service._needs_hls_sidecar(tracks))
     ):
-        aac_info = await mediamtx_service.ensure_hls_aac_sidecar(safe_name, status_info.get("tracks", []))
+        aac_info = await mediamtx_service.ensure_hls_aac_sidecar(
+            safe_name, tracks, force_video_transcode=force_hls_fix
+        )
         status_info.update(aac_info)
     return status_info
 

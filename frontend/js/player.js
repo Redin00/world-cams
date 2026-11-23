@@ -750,7 +750,7 @@ class StreamPlayer {
         return;
       }
 
-      // Embed MediaMTX player frame (HLS directly when configured, otherwise WebRTC) and initiate live telemetry verification
+      // Embed MediaMTX player frame (in HLS mode, wait for hlsmuxer/sidecar readiness before loading iframe to avoid HTTP 500 manifest errors)
       if (this.webrtcFrame) {
         if (this.connectTimeoutTimer) {
           clearTimeout(this.connectTimeoutTimer);
@@ -759,8 +759,13 @@ class StreamPlayer {
         this.activeStreamData = streamData;
         const useHlsDirectly = (streamData.playback_mode === 'hls' || !streamData.webrtc_url) && Boolean(streamData.hls_url);
         this.isHlsMode = useHlsDirectly;
-        const playerBaseUrl = useHlsDirectly ? streamData.hls_url : streamData.webrtc_url;
-        this.webrtcFrame.src = `${playerBaseUrl}/?autoplay=true&muted=true`;
+        if (!useHlsDirectly) {
+          this.webrtcFrame.src = `${streamData.webrtc_url}/?autoplay=true&muted=true`;
+        } else {
+          this.webrtcFrame.src = 'about:blank';
+          this.webrtcFrame.style.display = 'none';
+          this.setStatus('CONNECTING', 'Initializing HLS segments and audio pipeline...');
+        }
         this.monitorRtspTelemetry(streamData.stream_path, targetId, feed, isAltRtsp);
       }
     } catch (err) {
@@ -793,10 +798,20 @@ class StreamPlayer {
     }
 
     let attempts = 0;
-    const maxAttempts = this.currentFeedTorRouted ? 20 : 10; // Verify every 900ms (~18s over Tor, ~9s direct)
+    const maxAttempts = this.currentFeedTorRouted ? 20 : 12; // Verify every 900ms (~18s over Tor, ~10.8s direct)
     let streamVerified = false;
+    let frameLoaded = !this.isHlsMode;
     let aacWaitPolls = 0;
+    let hlsMuxWaitPolls = 0;
     let aacSwitched = false;
+    let forceHlsFix = false;
+
+    const buildAacHlsUrl = (aacPath) => {
+      const hlsRoot = (this.activeStreamData?.hls_url || '').replace(/\/+$/, '');
+      const baseParts = hlsRoot.split('/');
+      baseParts[baseParts.length - 1] = aacPath;
+      return `${baseParts.join('/')}/?autoplay=true&muted=true`;
+    };
 
     this.telemetryInterval = setInterval(async () => {
       // If user switched camera in the meantime, terminate poller
@@ -809,7 +824,7 @@ class StreamPlayer {
       attempts++;
       try {
         const statusUrl = this.isHlsMode
-          ? `/api/streams/status/${streamName}?hls_audio=true`
+          ? `/api/streams/status/${streamName}?hls_audio=true${forceHlsFix ? '&force_hls_fix=true' : ''}`
           : `/api/streams/status/${streamName}`;
         const res = await fetch(statusUrl);
         if (this.activeFeedId !== targetId) return;
@@ -822,30 +837,54 @@ class StreamPlayer {
           if (status.ready && (status.bytes_received > 0 || (status.tracks && status.tracks.length > 0))) {
             streamVerified = true;
 
-            if (this.overlayEl) this.overlayEl.style.display = 'none';
-            if (this.snapshotEl) this.snapshotEl.style.display = 'none';
-            if (this.videoEl) this.videoEl.style.display = 'none';
-            if (this.webrtcFrame) this.webrtcFrame.style.display = 'block';
-
             const codecUpper = (status.codec || '').toUpperCase();
             let switchedToHlsJustNow = false;
             if ((codecUpper.includes('H265') || codecUpper.includes('HEVC')) && this.activeStreamData?.hls_url && !this.isHlsMode) {
               this.isHlsMode = true;
               switchedToHlsJustNow = true;
-              if (this.webrtcFrame) this.webrtcFrame.src = `${this.activeStreamData.hls_url}/?autoplay=true&muted=true`;
-              this.setStatus('LIVE HLS');
-            } else {
-              this.setStatus(this.isHlsMode ? 'LIVE HLS' : 'LIVE WEBRTC');
+              frameLoaded = false;
             }
 
+            if (this.isHlsMode) {
+              // Wait briefly (up to 4 polls) for pending AAC sidecar so the iframe loads once cleanly with audio
+              const waitingOnSidecar = !status.aac_stream_path && status.aac_pending && aacWaitPolls < 4;
+              const canLoadHlsNow = Boolean(status.aac_stream_path) || (Boolean(status.hls_ready) && !waitingOnSidecar);
+
+              if (!frameLoaded && !canLoadHlsNow && hlsMuxWaitPolls < 14) {
+                hlsMuxWaitPolls++;
+                if (status.aac_pending) aacWaitPolls++;
+                // If native HLS muxer stays unavailable despite active bytes, trigger ffmpeg H.264 normalization
+                if (!status.hls_ready && !status.aac_pending && status.bytes_received > 0 && hlsMuxWaitPolls >= 4) {
+                  forceHlsFix = true;
+                }
+                this.setStatus(
+                  'CONNECTING',
+                  status.aac_pending
+                    ? 'Preparing HLS stream with compatible AAC audio...'
+                    : 'Buffering first HLS video keyframe...'
+                );
+                return;
+              }
+            }
+
+            if (this.overlayEl) this.overlayEl.style.display = 'none';
+            if (this.snapshotEl) this.snapshotEl.style.display = 'none';
+            if (this.videoEl) this.videoEl.style.display = 'none';
+            if (this.webrtcFrame) this.webrtcFrame.style.display = 'block';
+
+            this.setStatus(this.isHlsMode ? 'LIVE HLS' : 'LIVE WEBRTC');
+
             let aacSuffix = aacSwitched ? ' + AAC' : '';
-            if (this.isHlsMode && !aacSwitched && status.aac_stream_path && this.activeStreamData?.hls_url && this.webrtcFrame) {
-              const hlsRoot = this.activeStreamData.hls_url.replace(/\/+$/, '');
-              const baseParts = hlsRoot.split('/');
-              baseParts[baseParts.length - 1] = status.aac_stream_path;
-              this.webrtcFrame.src = `${baseParts.join('/')}/?autoplay=true&muted=true`;
-              aacSwitched = true;
-              aacSuffix = ' + AAC';
+            if (this.isHlsMode && this.webrtcFrame && this.activeStreamData?.hls_url) {
+              if (!aacSwitched && status.aac_stream_path) {
+                this.webrtcFrame.src = buildAacHlsUrl(status.aac_stream_path);
+                frameLoaded = true;
+                aacSwitched = true;
+                aacSuffix = ' + AAC';
+              } else if (!frameLoaded) {
+                this.webrtcFrame.src = `${this.activeStreamData.hls_url}/?autoplay=true&muted=true`;
+                frameLoaded = true;
+              }
             }
 
             const resInfo = status.resolution ? ` [${status.resolution}]` : '';

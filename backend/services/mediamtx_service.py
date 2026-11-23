@@ -223,7 +223,7 @@ class MediaMTXService:
             pass
         return []
 
-    async def get_path_status(self, clean_path: str) -> Dict[str, Any]:
+    async def get_path_status(self, clean_path: str, check_hls: bool = False) -> Dict[str, Any]:
         """
         Query real-time transmission telemetry from MediaMTX core.
         Checks if the RTSP video stream has decoded tracks, incoming bytes, and is ready for playback.
@@ -260,13 +260,27 @@ class MediaMTXService:
                             res_str = f"{props['width']}x{props['height']}"
                     if not codec_str and tracks:
                         codec_str = str(tracks[0])
+                    bytes_rx = data.get("bytesReceived", 0)
+                    hls_ready = False
+                    if check_hls and ready and bytes_rx > 0 and not self._has_non_hls_video(tracks):
+                        try:
+                            hm_res = await client.get(f"{self.api_url}/v3/hlsmuxers/get/{clean}")
+                            hls_ready = hm_res.status_code == 200
+                        except Exception:
+                            hls_ready = False
+                    if settings.STREAM_DEBUG:
+                        logger.debug(
+                            f"[STREAM_DEBUG] path_status({clean}): ready={ready} bytes={bytes_rx} "
+                            f"tracks={tracks} hls_ready={hls_ready}"
+                        )
                     return {
                         "ready": ready,
                         "online": data.get("online", data.get("available", ready)),
-                        "bytes_received": data.get("bytesReceived", 0),
+                        "bytes_received": bytes_rx,
                         "tracks": tracks,
                         "codec": codec_str,
                         "resolution": res_str,
+                        "hls_ready": hls_ready,
                         "readers": len(data.get("readers", []))
                     }
         except Exception as e:
@@ -279,6 +293,7 @@ class MediaMTXService:
             "tracks": [],
             "codec": "",
             "resolution": "",
+            "hls_ready": False,
             "readers": 0
         }
 
@@ -312,11 +327,13 @@ class MediaMTXService:
         """Return True when HLS playback needs an ffmpeg sidecar (non-HLS audio or non-HLS video)."""
         return cls._has_non_hls_audio(tracks) or cls._has_non_hls_video(tracks)
 
-    async def ensure_hls_aac_sidecar(self, clean_path: str, tracks: Optional[List[str]] = None) -> Dict[str, Any]:
+    async def ensure_hls_aac_sidecar(
+        self, clean_path: str, tracks: Optional[List[str]] = None, force_video_transcode: bool = False
+    ) -> Dict[str, Any]:
         """
         Hybrid HLS sidecar: reads from MediaMTX's already-connected local RTSP path
         and publishes `<clean_path>_aac` (copying H264/H265 video and converting audio to AAC,
-        or transcoding M-JPEG/MPEG-4 video to H264 if needed) so the original stream never breaks.
+        or transcoding M-JPEG/MPEG-4/incompatible video to H264 if needed) so the original stream never breaks.
         """
         if not settings.MEDIAMTX_HLS_TRANSCODE_AUDIO or shutil.which("ffmpeg") is None:
             return {"aac_stream_path": None, "aac_pending": False}
@@ -325,7 +342,7 @@ class MediaMTXService:
         if not clean or clean.endswith("_aac"):
             return {"aac_stream_path": None, "aac_pending": False}
 
-        transcode_video = self._has_non_hls_video(tracks or [])
+        transcode_video = force_video_transcode or self._has_non_hls_video(tracks or [])
         aac_path = f"{clean}_aac"
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
