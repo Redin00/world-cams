@@ -315,12 +315,17 @@ class MediaMTXService:
                         codec_str = str(tracks[0])
                     bytes_rx = data.get("bytesReceived", 0)
                     hls_ready = False
+                    hls_status = 0
+                    hls_crashed = False
+                    if not ready:
+                        self._hls_verified.discard(clean)
                     if check_hls and ready and bytes_rx > 0 and not self._has_non_hls_video(tracks):
-                        hls_ready = await self._is_hls_manifest_ready(clean)
+                        hls_status, hls_crashed = await self._probe_hls_manifest_detail(clean, client)
+                        hls_ready = hls_status == 200
                     if settings.STREAM_DEBUG:
                         logger.debug(
                             f"[STREAM_DEBUG] path_status({clean}): ready={ready} bytes={bytes_rx} "
-                            f"tracks={tracks} hls_ready={hls_ready}"
+                            f"tracks={tracks} hls_ready={hls_ready} hls_status={hls_status} hls_crashed={hls_crashed}"
                         )
                     return {
                         "ready": ready,
@@ -330,6 +335,8 @@ class MediaMTXService:
                         "codec": codec_str,
                         "resolution": res_str,
                         "hls_ready": hls_ready,
+                        "hls_status": hls_status,
+                        "hls_crashed": hls_crashed,
                         "readers": len(data.get("readers", []))
                     }
         except Exception as e:
@@ -343,6 +350,8 @@ class MediaMTXService:
             "codec": "",
             "resolution": "",
             "hls_ready": False,
+            "hls_status": 0,
+            "hls_crashed": False,
             "readers": 0
         }
 
@@ -441,12 +450,13 @@ class MediaMTXService:
                         pbytes = pdata.get("bytesReceived", 0)
                         has_aac = transcode_video or any("MPEG-4 AUDIO" in str(t).upper() for t in ptracks)
                         manifest_status = 0
+                        manifest_crashed = False
                         if pdata.get("ready") and pbytes > 2048 and has_aac:
-                            manifest_status = await self._probe_hls_manifest_status(aac_path, client)
+                            manifest_status, manifest_crashed = await self._probe_hls_manifest_detail(aac_path, client)
                         if settings.STREAM_DEBUG:
                             logger.debug(
                                 f"[STREAM_DEBUG] sidecar_status({aac_path}): ready={pdata.get('ready')} "
-                                f"bytes={pbytes} tracks={ptracks} manifest_status={manifest_status}"
+                                f"bytes={pbytes} tracks={ptracks} manifest_status={manifest_status} crashed={manifest_crashed}"
                             )
                         if manifest_status == 200:
                             return {"aac_stream_path": aac_path, "aac_pending": False}
@@ -454,7 +464,7 @@ class MediaMTXService:
                         # automatically rebuild the sidecar with libx264 -bf 0 (strict monotonic DTS == PTS)!
                         if (
                             manifest_status == 500
-                            and pbytes > 8192
+                            and (manifest_crashed or pbytes > 8192)
                             and not self._sidecar_video_transcoded.get(clean, False)
                         ):
                             logger.info(
@@ -484,15 +494,15 @@ class MediaMTXService:
             logger.debug(f"HLS AAC sidecar notice for {clean}: {e}")
             return {"aac_stream_path": None, "aac_pending": False}
 
-    async def _probe_hls_manifest_status(self, clean_path: str, api_client: Optional[httpx.AsyncClient] = None) -> int:
+    async def _probe_hls_manifest_detail(
+        self, clean_path: str, api_client: Optional[httpx.AsyncClient] = None
+    ) -> tuple[int, bool]:
         """
         Check HLS manifest readiness without leaking extra MediaMTX sessions:
-        1. Return 200 immediately if already verified for this active stream.
-        2. First verify /v3/hlsmuxers/get/<path> exists (zero session overhead).
+        1. Always verify /v3/hlsmuxers/get/<path> exists first (zero session overhead), invalidating stale cache on 404.
+        2. Return (200, False) immediately if already verified for this active stream.
         3. Probe index.m3u8 once to confirm 200 OK + #EXTM3U (catching HTTP 500 muxer crashes).
         """
-        if clean_path in self._hls_verified:
-            return 200
         try:
             if api_client is not None:
                 hm_res = await api_client.get(f"{self.api_url}/v3/hlsmuxers/get/{clean_path}")
@@ -500,19 +510,27 @@ class MediaMTXService:
                 async with httpx.AsyncClient(timeout=1.5) as tmp_c:
                     hm_res = await tmp_c.get(f"{self.api_url}/v3/hlsmuxers/get/{clean_path}")
             if hm_res.status_code != 200:
-                return 404
+                self._hls_verified.discard(clean_path)
+                return 404, False
+            if clean_path in self._hls_verified:
+                return 200, False
             client = self._get_media_client()
             resp = await client.get(
                 f"{self.local_hls_url}/{clean_path}/index.m3u8?cookieCheck=1",
                 cookies={},
-                timeout=1.5,
+                timeout=2.0,
             )
             if resp.status_code == 200 and "#EXTM3U" in resp.text:
                 self._hls_verified.add(clean_path)
-                return 200
-            return resp.status_code
+                return 200, False
+            crashed = resp.status_code == 500 and "not available" in resp.text.lower()
+            return resp.status_code, crashed
         except Exception:
-            return 0
+            return 0, False
+
+    async def _probe_hls_manifest_status(self, clean_path: str, api_client: Optional[httpx.AsyncClient] = None) -> int:
+        status, _ = await self._probe_hls_manifest_detail(clean_path, api_client)
+        return status
 
     async def _is_hls_manifest_ready(self, clean_path: str) -> bool:
         return (await self._probe_hls_manifest_status(clean_path)) == 200
@@ -535,11 +553,13 @@ class MediaMTXService:
         for attempt in range(max_tries):
             resp = await client.get(target, cookies={})
             if resp.status_code == 500 and attempt < max_tries - 1 and (
-                "muxer" in resp.text.lower()
+                "waiting to be created" in resp.text.lower()
             ):
                 await asyncio.sleep(0.25)
                 continue
             break
+        if resp is not None and resp.status_code in (404, 500):
+            self._hls_verified.discard(clean_path)
         ctype = resp.headers.get("content-type", "application/octet-stream")
         cache_hdr = "no-store, no-cache" if file_name.endswith(".m3u8") else "public, max-age=30"
         return resp.content, resp.status_code, {
