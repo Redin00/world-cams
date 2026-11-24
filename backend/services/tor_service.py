@@ -68,6 +68,9 @@ class TorProxyService:
         self.process: Optional[subprocess.Popen] = None
         self._bridges: Dict[str, Dict[str, Any]] = {}
         self._bridge_lock = asyncio.Lock()
+        # Remember winning Tor circuit_key per (ip, port) for the current generation so
+        # probing and MediaMTX reuse the exact exit node proven to allow that port.
+        self._preferred_circuit_keys: Dict[Tuple[str, int], Tuple[int, str]] = {}
 
     @staticmethod
     def _extract_host(target_host_or_url: str) -> str:
@@ -297,6 +300,7 @@ class TorProxyService:
         self.cached_exit_ip = None
         self.cached_exit_country = None
         self.cached_exit_isp = None
+        self._preferred_circuit_keys.clear()
 
         await self.stop_all_bridges()
         newnym_sent = await self._send_control_newnym() if send_newnym else False
@@ -465,31 +469,40 @@ class TorProxyService:
             return await asyncio.wait_for(asyncio.open_connection(ip, int(port)), timeout=timeout)
 
         eff_timeout = max(float(timeout), 10.0)
-        base_key = circuit_key or f"{ip}:{port}"
+        port_int = int(port)
+        base_key = circuit_key or f"{ip}:{port_int}"
+        pref = self._preferred_circuit_keys.get((ip, port_int))
+        if pref and pref[0] == self.circuit_generation and circuit_key in (None, f"{ip}:{port_int}"):
+            base_key = pref[1]
         try:
-            return await self._open_socks5_once(ip, port, eff_timeout, circuit_key=base_key)
+            conn = await self._open_socks5_once(ip, port_int, eff_timeout, circuit_key=base_key)
+            self._preferred_circuit_keys[(ip, port_int)] = (self.circuit_generation, base_key)
+            return conn
         except HTTPException:
             raise
         except TorSocksConnectError as e:
             # 0x05 = target actively refused connection; 0x01/0x02/0x06 = Tor exit policy / circuit failure
             if retry_alt_exit and e.reply_code in (1, 2, 6):
-                alt_key = f"{base_key}_e{secrets.token_hex(2)}"
-                logger.debug(f"[TOR] Exit failure (code={e.reply_code}) for {ip}:{port}; retrying via {alt_key}")
-                return await self._open_socks5_once(ip, port, eff_timeout, circuit_key=alt_key)
+                alt_key = f"{ip}:{port_int}_e{secrets.token_hex(2)}"
+                logger.debug(f"[TOR] Exit failure (code={e.reply_code}) for {ip}:{port_int}; retrying via {alt_key}")
+                conn = await self._open_socks5_once(ip, port_int, eff_timeout, circuit_key=alt_key)
+                self._preferred_circuit_keys[(ip, port_int)] = (self.circuit_generation, alt_key)
+                return conn
             raise
 
     async def check_port_reachable(
         self,
         ip: str,
         port: int,
-        direct_timeout: float = 2.0,
-        tor_timeout: float = 5.5,
+        direct_timeout: float = 2.5,
+        tor_timeout: float = 9.0,
         circuit_key: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Fast TCP port reachability pre-flight (Direct TCP or fail-closed Tor SOCKS5).
         Immediately detects closed, refused, or dead/reassigned camera IPs before launching
-        RTSP/HTTP path probing or MediaMTX pipelines.
+        RTSP/HTTP path probing or MediaMTX pipelines, and pins any working Tor exit circuit
+        so subsequent RTSP probing and MediaMTX pulls reuse that exact healthy exit node.
         Returns (is_reachable, reason_code).
         """
         port_int = int(port)
@@ -517,15 +530,19 @@ class TorProxyService:
 
         # Tor fail-closed reachability check via SOCKS5 CONNECT (zero direct traffic!)
         base_key = circuit_key or f"{ip}:{port_int}"
+        pref = self._preferred_circuit_keys.get((ip, port_int))
+        if pref and pref[0] == self.circuit_generation and circuit_key in (None, f"{ip}:{port_int}"):
+            base_key = pref[1]
         attempts = [
             (base_key, tor_timeout),
-            (f"{base_key}_p{secrets.token_hex(2)}", max(4.5, tor_timeout - 1.0)),
+            (f"{ip}:{port_int}_p{secrets.token_hex(2)}", max(7.0, tor_timeout - 1.5)),
         ]
         last_reason = "unreachable"
         for idx, (ck, t_out) in enumerate(attempts):
             writer = None
             try:
                 _, writer = await self._open_socks5_once(ip, port_int, timeout=t_out, circuit_key=ck)
+                self._preferred_circuit_keys[(ip, port_int)] = (self.circuit_generation, ck)
                 return True, "open"
             except HTTPException:
                 raise

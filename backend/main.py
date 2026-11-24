@@ -491,17 +491,28 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
             )
 
     # Fast TCP Port Reachability Pre-Flight (Direct or Tor SOCKS5):
-    # Immediately abort when a camera's IP has changed or its port (554, 80, 443, 8080, etc.) is unreachable.
-    preflight_ip = feed.ip if feed else None
-    preflight_port = int(feed.port) if (feed and feed.port) else None
-    if (not preflight_ip or not preflight_port) and rtsp_url:
+    # Immediately abort when a camera's IP has changed or its target port (554, 80, 443, 8080, etc.) is unreachable.
+    preflight_ip = None
+    preflight_port = None
+    if feed and is_web_camera_port(feed.port) and rtsp_url and rtsp_url.startswith("rtsp://"):
+        # Web-port feed with legacy dummy rtsp:// URL: check the actual web port
+        preflight_ip = feed.ip
+        preflight_port = int(feed.port)
+    elif rtsp_url:
         try:
             _pu = urlparse(rtsp_url)
-            preflight_ip = preflight_ip or _pu.hostname
-            if not preflight_port:
-                preflight_port = _pu.port or (443 if _pu.scheme in ("https", "rtsps") else (554 if _pu.scheme == "rtsp" else 80))
+            if _pu.hostname:
+                preflight_ip = _pu.hostname
+                preflight_port = _pu.port or (
+                    443 if _pu.scheme in ("https", "rtsps")
+                    else (554 if _pu.scheme == "rtsp" else 80)
+                )
         except Exception:
             pass
+    if not preflight_ip and feed:
+        preflight_ip = feed.ip
+    if not preflight_port and feed and feed.port:
+        preflight_port = int(feed.port)
 
     if (
         preflight_ip
