@@ -443,6 +443,20 @@ def _is_specific_http_stream_url(u: Optional[str], port: int) -> bool:
     return cleaned.startswith(("http://", "https://"))
 
 
+def _is_demo_camera_target(host_or_url: Optional[str]) -> bool:
+    raw = (host_or_url or "").lower()
+    return any(k in raw for k in ("rtsp.stream", "pattern", "demo", "simulated", "198.51.100", "203.0.113", "192.0.2"))
+
+
+def _format_port_unreachable_reason(reason_code: str) -> str:
+    return {
+        "connection_refused": "connection refused",
+        "host_unreachable": "host unreachable",
+        "timeout": "connection timed out",
+        "tor_exit_rejected": "blocked or unreachable over Tor",
+    }.get(reason_code, "port unreachable")
+
+
 @app.post("/api/streams/play", response_model=StreamResponse)
 async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """
@@ -476,6 +490,54 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                 reason=f"stream_{req.feed_id or 'play'}", verify_ip=False, send_newnym=False
             )
 
+    # Fast TCP Port Reachability Pre-Flight (Direct or Tor SOCKS5):
+    # Immediately abort when a camera's IP has changed or its port (554, 80, 443, 8080, etc.) is unreachable.
+    preflight_ip = feed.ip if feed else None
+    preflight_port = int(feed.port) if (feed and feed.port) else None
+    if (not preflight_ip or not preflight_port) and rtsp_url:
+        try:
+            _pu = urlparse(rtsp_url)
+            preflight_ip = preflight_ip or _pu.hostname
+            if not preflight_port:
+                preflight_port = _pu.port or (443 if _pu.scheme in ("https", "rtsps") else (554 if _pu.scheme == "rtsp" else 80))
+        except Exception:
+            pass
+
+    if (
+        preflight_ip
+        and preflight_port
+        and not _is_demo_camera_target(rtsp_url)
+        and not _is_demo_camera_target(preflight_ip)
+    ):
+        port_ok, port_reason = await tor_service.check_port_reachable(
+            preflight_ip,
+            preflight_port,
+            circuit_key=f"{preflight_ip}:{preflight_port}",
+        )
+        if await request.is_disconnected():
+            raise HTTPException(status_code=499, detail="Client disconnected")
+        if not port_ok:
+            reason_label = _format_port_unreachable_reason(port_reason)
+            logger.info(
+                f"[PREFLIGHT] {preflight_ip}:{preflight_port} unreachable ({port_reason}); stopping immediately."
+            )
+            is_web = is_web_camera_port(preflight_port) or bool(rtsp_url and rtsp_url.startswith(("http://", "https://")))
+            scheme = "https" if is_https_camera_port(preflight_port) or (rtsp_url and rtsp_url.startswith("https://")) else ("http" if is_web else "rtsp")
+            return StreamResponse(
+                stream_path=stream_path or f"offline_{re.sub(r'[^a-zA-Z0-9_-]', '_', preflight_ip)}_{preflight_port}",
+                rtsp_source=rtsp_url or f"{scheme}://{preflight_ip}:{preflight_port}/",
+                webrtc_url="",
+                webrtc_whep_url="",
+                hls_url="",
+                hls_manifest_url="",
+                status="offline",
+                stream_type="offline",
+                web_url=f"{scheme}://{preflight_ip}:{preflight_port}/" if is_web else None,
+                tor_routed=tor_service.should_route_via_tor(preflight_ip),
+                tor_circuit_id=None,
+                message=f"Port {preflight_port} unreachable ({reason_label}) — camera offline or IP changed."
+            )
+
     if feed:
 
         # ---------------------------------------------------------------------
@@ -504,7 +566,9 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
             # Auto-resolve live MJPEG video or JPEG snapshot subpath (or extract from portal HTML)
             if not has_valid_stream:
                 product_hint = f"{feed.product or ''} {feed.banner or ''}".strip()
-                resolve_res = await rtsp_resolver.resolve_camera(feed.ip, feed.port, product_hint, rtsp_url)
+                resolve_res = await rtsp_resolver.resolve_camera(
+                    feed.ip, feed.port, product_hint, rtsp_url, skip_port_check=True
+                )
                 if resolve_res.get("resolved"):
                     stype = resolve_res.get("stream_type", "mjpeg")
                     resolved_url = _clean_http_url(resolve_res["stream_url"])
@@ -693,6 +757,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                 feed.ip, feed.port, product_hint, rtsp_url, continuous=True,
                 disconnect_check=request.is_disconnected,
                 exclude_paths=already_failed_paths,
+                skip_port_check=True,
             )
             if await request.is_disconnected():
                 raise HTTPException(status_code=499, detail="Client disconnected")

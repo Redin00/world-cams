@@ -478,6 +478,85 @@ class TorProxyService:
                 return await self._open_socks5_once(ip, port, eff_timeout, circuit_key=alt_key)
             raise
 
+    async def check_port_reachable(
+        self,
+        ip: str,
+        port: int,
+        direct_timeout: float = 2.5,
+        tor_timeout: float = 6.5,
+        circuit_key: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Fast TCP port reachability pre-flight (Direct TCP or fail-closed Tor SOCKS5).
+        Immediately detects closed, refused, or dead/reassigned camera IPs before launching
+        RTSP/HTTP path probing or MediaMTX pipelines.
+        Returns (is_reachable, reason_code).
+        """
+        port_int = int(port)
+        if not self.should_route_via_tor(ip):
+            writer = None
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection(ip, port_int),
+                    timeout=direct_timeout,
+                )
+                return True, "open"
+            except ConnectionRefusedError:
+                return False, "connection_refused"
+            except asyncio.TimeoutError:
+                return False, "timeout"
+            except OSError:
+                return False, "host_unreachable"
+            finally:
+                if writer is not None:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
+        # Tor fail-closed reachability check via SOCKS5 CONNECT (zero direct traffic!)
+        base_key = circuit_key or f"{ip}:{port_int}"
+        attempts = [
+            (base_key, tor_timeout),
+            (f"{base_key}_p{secrets.token_hex(2)}", max(5.0, tor_timeout - 1.0)),
+        ]
+        last_reason = "unreachable"
+        for idx, (ck, t_out) in enumerate(attempts):
+            writer = None
+            try:
+                _, writer = await self._open_socks5_once(ip, port_int, timeout=t_out, circuit_key=ck)
+                return True, "open"
+            except HTTPException:
+                raise
+            except TorSocksConnectError as e:
+                # 0x05 = Connection Refused, 0x03/0x04 = Network/Host Unreachable (target-side hard failure: stop immediately!)
+                if e.reply_code == 5:
+                    return False, "connection_refused"
+                if e.reply_code in (3, 4):
+                    return False, "host_unreachable"
+                # 0x01/0x02/0x06 = Tor exit policy / circuit failure: retry once on an alternate exit
+                last_reason = "tor_exit_rejected" if e.reply_code == 2 else "unreachable"
+                if idx == 0:
+                    continue
+                return False, last_reason
+            except asyncio.TimeoutError:
+                last_reason = "timeout"
+                if idx == 0:
+                    continue
+                return False, last_reason
+            except Exception:
+                return False, "unreachable"
+            finally:
+                if writer is not None:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+
+        return False, last_reason
+
     @staticmethod
     def _rewrite_rtsp_c2r(
         data: bytes,

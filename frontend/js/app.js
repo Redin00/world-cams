@@ -9,6 +9,10 @@ class AppController {
     this.selectedFeed = null;
     this.selectedCardIds = new Set();
     this.isAdminAuthorized = false;
+    this.lastSelectionWasRandom = false;
+    this.randomAutoSkipTimer = null;
+    this.randomSkipCount = 0;
+    this.randomSkippedIds = new Set();
 
     this.currentFilters = {
       country: '',
@@ -1261,7 +1265,51 @@ class AppController {
     lucide.createIcons();
   }
 
-  selectFeed(feed, autoSwitchMobile = true) {
+  cancelRandomAutoSkip() {
+    if (this.randomAutoSkipTimer) {
+      clearTimeout(this.randomAutoSkipTimer);
+      this.randomAutoSkipTimer = null;
+    }
+  }
+
+  scheduleRandomSkipOnUnreachable(feedId, reason = '') {
+    if (!this.lastSelectionWasRandom || !feedId || this.selectedFeed?.id !== feedId) {
+      return;
+    }
+    this.cancelRandomAutoSkip();
+    this.randomSkippedIds.add(feedId);
+    const maxConsecutiveSkips = 8;
+    if (this.randomSkipCount >= maxConsecutiveSkips) {
+      this.randomSkipCount = 0;
+      if (window.streamPlayer?.techProto) {
+        window.streamPlayer.techProto.textContent = `Auto-skip paused after ${maxConsecutiveSkips} unreachable cameras.`;
+      }
+      return;
+    }
+    this.randomSkipCount++;
+    const delayMs = 2500;
+    if (window.streamPlayer?.techProto) {
+      window.streamPlayer.techProto.textContent = `Port unreachable — skipping to next random cam (${this.randomSkipCount}/${maxConsecutiveSkips})...`;
+    }
+    if (window.streamPlayer?.overlayEl && window.streamPlayer?.overlayMsg) {
+      window.streamPlayer.overlayEl.style.display = 'flex';
+      window.streamPlayer.overlayMsg.textContent = `${reason || 'Port unreachable'} — Skipping to another random camera in 2.5s...`;
+    }
+    this.randomAutoSkipTimer = setTimeout(() => {
+      this.randomAutoSkipTimer = null;
+      if (this.lastSelectionWasRandom && this.selectedFeed?.id === feedId) {
+        this.selectRandomFeed(true);
+      }
+    }, delayMs);
+  }
+
+  selectFeed(feed, autoSwitchMobile = true, fromRandom = false) {
+    this.cancelRandomAutoSkip();
+    this.lastSelectionWasRandom = Boolean(fromRandom);
+    if (!fromRandom) {
+      this.randomSkipCount = 0;
+      this.randomSkippedIds.clear();
+    }
     this.selectedFeed = feed;
 
     // Ensure stream inspector output is shown in every layout (including Map & Grid views)
@@ -1301,17 +1349,27 @@ class AppController {
     }
   }
 
-  async selectRandomFeed() {
+  async selectRandomFeed(isAutoSkip = false) {
+    this.cancelRandomAutoSkip();
+    if (!isAutoSkip) {
+      this.randomSkipCount = 0;
+      if (this.randomSkippedIds.size > 50) {
+        this.randomSkippedIds.clear();
+      }
+    }
+
     let chosenFeed = null;
 
     // Pick from currently loaded feeds list if there are multiple feeds
     if (this.feeds && this.feeds.length > 1) {
-      // Pick a random feed that is different from currently selected feed if possible
-      let available = this.feeds;
-      if (this.selectedFeed) {
-        const filtered = this.feeds.filter(f => f.id !== this.selectedFeed.id);
-        if (filtered.length > 0) available = filtered;
+      // Avoid current feed and recently unreachable feeds skipped during random browsing
+      const currentId = this.selectedFeed?.id;
+      let available = this.feeds.filter(f => f.id !== currentId && !this.randomSkippedIds.has(f.id));
+      if (available.length === 0) {
+        this.randomSkippedIds.clear();
+        available = this.feeds.filter(f => f.id !== currentId);
       }
+      if (available.length === 0) available = this.feeds;
       const idx = Math.floor(Math.random() * available.length);
       chosenFeed = available[idx];
     } else {
@@ -1327,12 +1385,14 @@ class AppController {
     }
 
     if (!chosenFeed) {
-      alert('No camera feeds available to select.');
+      if (!isAutoSkip) {
+        alert('No camera feeds available to select.');
+      }
       return;
     }
 
-    // Select the camera feed (and switch to player on mobile)
-    this.selectFeed(chosenFeed, true);
+    // Select the camera feed (and switch to player on mobile), marking random mode active
+    this.selectFeed(chosenFeed, true, true);
 
     // Pan interactive map to the camera location if coordinates are available
     if (window.worldMap && chosenFeed.latitude && chosenFeed.longitude) {

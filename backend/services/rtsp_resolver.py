@@ -505,6 +505,17 @@ class VendorRtspResolver:
         if tor_service.should_route_via_tor(ip):
             await tor_service._require_socks_ready()
 
+        # Fast port pre-flight when called directly without an already-verified 401 challenge
+        if realm is None and nonce is None and not any(
+            k in str(ip).lower() for k in ("rtsp.stream", "pattern", "demo", "simulated", "198.51.100", "203.0.113", "192.0.2")
+        ):
+            port_ok, _ = await tor_service.check_port_reachable(ip, port, circuit_key=f"{ip}:{port}")
+            if not port_ok:
+                clean_p = (path or "").strip()
+                if clean_p and not clean_p.startswith("/"):
+                    clean_p = "/" + clean_p
+                return False, f"rtsp://{ip}:{port}{clean_p or '/'}", None
+
         vendor_key = self.detect_vendor_key(product)
         if vendor_key == "generic" and realm:
             realm_vendor = self.detect_vendor_key(realm)
@@ -1479,6 +1490,7 @@ class VendorRtspResolver:
         continuous: bool = True,
         disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
         exclude_paths: Optional[List[str]] = None,
+        skip_port_check: bool = False,
     ) -> Dict[str, Any]:
         """
         Automated Vendor RTSP Profile & Continuous Resolver Engine.
@@ -1489,6 +1501,26 @@ class VendorRtspResolver:
         """
         if tor_service.should_route_via_tor(ip):
             await tor_service._require_socks_ready()
+
+        # Fast port reachability pre-flight: stop immediately if target port is closed/dead (e.g. IP changed)
+        if not skip_port_check and not any(
+            k in f"{ip} {current_url}".lower() for k in ("rtsp.stream", "pattern", "demo", "simulated", "198.51.100", "203.0.113", "192.0.2")
+        ):
+            port_ok, port_reason = await tor_service.check_port_reachable(
+                ip, port, circuit_key=f"{ip}:{port}"
+            )
+            if not port_ok:
+                vendor_key = self.detect_vendor_key(product)
+                return {
+                    "resolved": False,
+                    "reachable": False,
+                    "hard_refused": port_reason in ("connection_refused", "host_unreachable"),
+                    "protocol": "offline",
+                    "stream_url": current_url,
+                    "vendor": vendor_key,
+                    "tested_count": 0,
+                    "message": f"Port {port} unreachable ({port_reason}) — aborted probing immediately."
+                }
 
         vendor_key = self.detect_vendor_key(product)
         profile = VENDOR_RTSP_PROFILES.get(vendor_key, VENDOR_RTSP_PROFILES["generic"])

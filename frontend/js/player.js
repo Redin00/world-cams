@@ -200,6 +200,9 @@ class StreamPlayer {
         liveDot.classList.remove('live');
       }
     }
+    if (state.startsWith('LIVE') && window.app) {
+      window.app.randomSkipCount = 0;
+    }
   }
 
   async showWebConsole(feed, message, effectiveUrl = null) {
@@ -346,6 +349,7 @@ class StreamPlayer {
   }
 
   stop(nextStreamPath = null) {
+    window.app?.cancelRandomAutoSkip?.();
     const prevPath = this.activeStreamData?.stream_path || this.currentFeed?.stream_path;
     // 1. Abort any in-flight fetch requests immediately
     if (this.abortController) {
@@ -484,8 +488,15 @@ class StreamPlayer {
     }
 
     if (streamInfo && streamInfo.status === 'offline') {
-      this.setStatus('OFFLINE', streamInfo.message || `${protoLabel} camera port ${portNum} closed or stream unavailable.`);
-      if (this.techProto) this.techProto.textContent = `Port ${portNum} Unreachable (Offline)`;
+      if (this.snapshotEl) {
+        this.snapshotEl.onload = null;
+        this.snapshotEl.onerror = null;
+        this.snapshotEl.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+      }
+      const offlineMsg = streamInfo.message || `${protoLabel} camera port ${portNum} unreachable or IP changed.`;
+      this.setStatus('OFFLINE', offlineMsg);
+      if (this.techProto) this.techProto.textContent = `Port ${portNum} Unreachable (Offline / IP Changed)`;
+      window.app?.scheduleRandomSkipOnUnreachable?.(targetId, offlineMsg);
       return;
     }
 
@@ -811,19 +822,27 @@ class StreamPlayer {
         }
       }
 
-      // If backend determined RTSP port is completely unreachable/filtered, fail fast without hanging
+      // If backend determined target port is unreachable/closed (e.g. camera offline or IP changed), stop immediately
       if (streamData.status === 'offline') {
         if (this.connectTimeoutTimer) {
           clearTimeout(this.connectTimeoutTimer);
           this.connectTimeoutTimer = null;
         }
+        this.teardownMediaEngines();
         const hasLiveSnapshot = feed.screenshot_url && !feed.screenshot_url.includes('unsplash');
         if (this.isSnapshotLoaded && hasLiveSnapshot) {
           this.setStatus('SNAPSHOT (RTSP BLOCKED)', streamData.message || `RTSP port ${portNum} unreachable. Displaying HTTP snapshot.`);
           if (this.techProto) this.techProto.textContent = `HTTP Snapshot Active (RTSP ${portNum} Unreachable)`;
         } else {
-          this.setStatus('RTSP OFFLINE', streamData.message || `Remote RTSP port ${portNum} unreachable or filtered.`);
-          if (this.techProto) this.techProto.textContent = `Port ${portNum} Host Unreachable / Filtered`;
+          if (this.snapshotEl) {
+            this.snapshotEl.onload = null;
+            this.snapshotEl.onerror = null;
+            this.snapshotEl.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+          }
+          const offlineMsg = streamData.message || `Port ${portNum} unreachable — camera offline or IP changed.`;
+          this.setStatus('RTSP OFFLINE', offlineMsg);
+          if (this.techProto) this.techProto.textContent = `Port ${portNum} Unreachable (Offline / IP Changed)`;
+          window.app?.scheduleRandomSkipOnUnreachable?.(targetId, offlineMsg);
         }
         return;
       }
