@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 import secrets
+import time
 from typing import Optional, List, Tuple, Dict, Any, Callable, Awaitable
 from urllib.parse import urlparse, urljoin
 import httpx
@@ -15,7 +16,7 @@ from backend.security import (
     is_https_camera_port,
     is_web_camera_port,
 )
-from backend.services.tor_service import tor_service
+from backend.services.tor_service import tor_service, TorSocksConnectError
 
 logger = logging.getLogger("worldcams.resolver")
 
@@ -305,24 +306,28 @@ VENDOR_RTSP_PROFILES: Dict[str, Dict[str, Any]] = {
         "ports": [554, 8554],
         "paths": [
             "/onvif1",
+            "/live",
+            "/11",
             "/Streaming/Channels/101",
             "/cam/realmonitor?channel=1&subtype=0",
             "/stream1",
+            "/live/ch0",
+            "/ch0_0.h264",
+            "/videoMain",
+            "/h264/ch01/main/av_stream",
+            "/h264/ch1/main/av_stream",
+            "/live.sdp",
             "/Preview_01_main",
             "/profile1/media.smp",
             "/media/video1",
             "/axis-media/media.amp",
-            "/video?inst=1",
-            "/live.sdp",
-            "/live/ch0",
-            "/ch0_0.h264",
-            "/videoMain",
-            "/live0",
-            "/h264/ch01/main/av_stream",
-            "/CH001.sdp",
             "/0",
-            "/MediaInput/h264",
-            "/live"
+            "/live0",
+            "/12",
+            "/stream2",
+            "/video?inst=1",
+            "/CH001.sdp",
+            "/MediaInput/h264"
         ],
         "creds": [
             ("admin", "admin"),
@@ -655,6 +660,14 @@ class VendorRtspResolver:
         conn_close = eof or bool(re.search(r"(?im)^Connection:\s*close\b", hdr_str))
         return hdr_str, new_leftover, conn_close
 
+    @staticmethod
+    def _is_hard_refused(exc: BaseException) -> bool:
+        if isinstance(exc, ConnectionRefusedError):
+            return True
+        if isinstance(exc, TorSocksConnectError) and exc.reply_code == 5:
+            return True
+        return False
+
     async def _probe_paths_persistent(
         self,
         host: str,
@@ -663,16 +676,16 @@ class VendorRtspResolver:
         timeout: float,
         stop_event: asyncio.Event,
         disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
+        req_timeout_override: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        Probe a sequence of RTSP paths by pipelining/reusing ONE persistent TCP connection
-        (transparently reconnecting only if the camera closes the socket on 404/401).
-        Over Tor this eliminates repeated SOCKS5 + 3-hop RELAY_BEGIN handshakes per path.
+        Probe a sequence of RTSP paths reusing ONE persistent TCP connection
+        (transparently reconnecting if the camera closes the socket between requests).
         """
         user_agent = "Lavf/58.76.100"
         is_tor = tor_service.should_route_via_tor(host)
-        connect_timeout = max(timeout, 8.5) if is_tor else timeout
-        req_timeout = max(timeout, 4.5) if is_tor else timeout
+        connect_timeout = max(timeout, 12.0) if is_tor else timeout
+        req_timeout = req_timeout_override or (max(timeout, 4.5) if is_tor else timeout)
 
         reader: Optional[asyncio.StreamReader] = None
         writer: Optional[asyncio.StreamWriter] = None
@@ -680,6 +693,8 @@ class VendorRtspResolver:
         cseq = 0
         tested = 0
         reachable = False
+        hard_refused = False
+        supports_keepalive = True
         auth_401: List[Tuple[str, Optional[str], Optional[str]]] = []
 
         async def _close_conn():
@@ -711,13 +726,17 @@ class VendorRtspResolver:
                 if stop_event.is_set():
                     break
                 if disconnect_check and await disconnect_check():
-                    return {"aborted": True, "tested": tested, "reachable": reachable, "auth_401": auth_401}
+                    return {"aborted": True, "tested": tested, "reachable": reachable, "hard_refused": hard_refused, "auth_401": auth_401}
 
                 uri = f"rtsp://{host}:{port}{path}"
                 resp_str = ""
+                if not supports_keepalive:
+                    await _close_conn()
+
                 for attempt in range(2):
                     if stop_event.is_set():
                         break
+                    reused = writer is not None and not writer.is_closing()
                     try:
                         await _ensure_conn()
                         cseq += 1
@@ -729,22 +748,28 @@ class VendorRtspResolver:
                         )
                         writer.write(req.encode())
                         await writer.drain()
+                        cur_read_timeout = min(req_timeout, 3.0) if (reused and is_tor) else req_timeout
                         resp_str, leftover, closed = await self._read_rtsp_message(
-                            reader, req_timeout, leftover=leftover
+                            reader, cur_read_timeout, leftover=leftover
                         )
                         if closed:
+                            if reused and not resp_str:
+                                supports_keepalive = False
                             await _close_conn()
                         if resp_str:
                             break
-                        # Server silently closed the persistent socket before replying; retry once on fresh socket
+                        if reused:
+                            supports_keepalive = False
                         await _close_conn()
                     except HTTPException:
                         raise
-                    except Exception:
+                    except Exception as exc:
                         await _close_conn()
+                        if self._is_hard_refused(exc):
+                            hard_refused = True
+                            return {"resolved": False, "tested": tested + 1, "reachable": False, "hard_refused": True, "auth_401": auth_401}
                         if not reachable:
-                            # Initial TCP/SOCKS5 connect to host:port failed -> host unreachable, stop immediately
-                            return {"resolved": False, "tested": tested + 1, "reachable": False, "auth_401": auth_401}
+                            return {"resolved": False, "tested": tested + 1, "reachable": False, "hard_refused": False, "auth_401": auth_401}
                         if attempt == 1:
                             break
 
@@ -766,6 +791,7 @@ class VendorRtspResolver:
                         "url": uri,
                         "tested": tested,
                         "reachable": True,
+                        "hard_refused": False,
                         "auth_401": auth_401,
                     }
 
@@ -779,7 +805,209 @@ class VendorRtspResolver:
         finally:
             await _close_conn()
 
-        return {"resolved": False, "tested": tested, "reachable": reachable, "auth_401": auth_401}
+        return {"resolved": False, "tested": tested, "reachable": reachable, "hard_refused": hard_refused, "auth_401": auth_401}
+
+    async def _probe_paths_adaptive(
+        self,
+        host: str,
+        port: int,
+        candidate_paths: List[str],
+        timeout: float,
+        disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Adaptive RTSP path prober for both direct LAN/WAN and Tor:
+        1. Probes path 0 on connection #1 (auto-detecting reachability & RTT).
+        2. Tests path 1 on the same socket to detect whether the camera supports RTSP keep-alive.
+        3. If keep-alive works: runs 2 (Tor) / 4 (direct) persistent workers across remaining paths (~3-5s over Tor).
+        4. If one-shot camera: switches immediately to clean fresh-socket batches on the warm Tor circuit
+           so it never wastes timeouts hanging on closed/ignored reused sockets.
+        """
+        if not candidate_paths:
+            return {"resolved": False, "tested": 0, "reachable": False, "hard_refused": False, "auth_401": [], "aborted": False}
+
+        is_tor = tor_service.should_route_via_tor(host)
+        connect_timeout = max(timeout, 12.0) if is_tor else timeout
+        req_timeout = max(timeout, 4.5) if is_tor else timeout
+        user_agent = "Lavf/58.76.100"
+
+        tested = 0
+        reachable = False
+        hard_refused = False
+        auth_401: List[Tuple[str, Optional[str], Optional[str]]] = []
+        reader: Optional[asyncio.StreamReader] = None
+        writer: Optional[asyncio.StreamWriter] = None
+        leftover = b""
+
+        async def _close_first():
+            nonlocal reader, writer, leftover
+            if writer is not None:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+            reader = None
+            writer = None
+            leftover = b""
+
+        def _record_401(path_str: str, resp_str: str):
+            rm = re.search(r'realm="([^"]*)"', resp_str, re.IGNORECASE)
+            nm = re.search(r'nonce="([^"]+)"', resp_str, re.IGNORECASE)
+            realm = rm.group(1) if rm else None
+            nonce = nm.group(1) if nm else None
+            if not any(existing[0] == path_str for existing in auth_401):
+                auth_401.append((path_str, realm, nonce))
+
+        keepalive_supported = False
+        first_rtt = 1.0
+        next_start_idx = 1
+
+        try:
+            # Step 1: Probe Path 0 on Connection #1
+            p0 = candidate_paths[0]
+            uri0 = f"rtsp://{host}:{port}{p0}"
+            try:
+                reader, writer = await tor_service.open_connection(
+                    host, port, timeout=connect_timeout, circuit_key=f"{host}:{port}"
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                return {
+                    "resolved": False,
+                    "tested": 1,
+                    "reachable": False,
+                    "hard_refused": self._is_hard_refused(exc),
+                    "auth_401": auth_401,
+                    "aborted": False,
+                }
+
+            t_req0 = time.monotonic()
+            req0 = (
+                f"DESCRIBE {uri0} RTSP/1.0\r\n"
+                f"CSeq: 1\r\n"
+                f"User-Agent: {user_agent}\r\n"
+                f"Accept: application/sdp\r\n\r\n"
+            )
+            writer.write(req0.encode())
+            await writer.drain()
+            resp0, leftover, closed0 = await self._read_rtsp_message(reader, req_timeout, leftover=leftover)
+            first_rtt = max(0.05, time.monotonic() - t_req0)
+            tested += 1
+
+            if resp0:
+                toks = resp0.split(None, 2)
+                if len(toks) > 1 and toks[1].isdigit():
+                    reachable = True
+                if self._is_rtsp_200(resp0):
+                    return {"resolved": True, "url": uri0, "tested": tested, "reachable": True, "hard_refused": False, "auth_401": auth_401, "aborted": False}
+                if self._is_rtsp_401(resp0):
+                    _record_401(p0, resp0)
+            if not reachable:
+                await _close_first()
+                return {"resolved": False, "tested": tested, "reachable": False, "hard_refused": False, "auth_401": auth_401, "aborted": False}
+
+            if len(candidate_paths) == 1:
+                await _close_first()
+                return {"resolved": False, "tested": tested, "reachable": True, "hard_refused": False, "auth_401": auth_401, "aborted": False}
+
+            if disconnect_check and await disconnect_check():
+                await _close_first()
+                return {"resolved": False, "tested": tested, "reachable": True, "hard_refused": False, "auth_401": auth_401, "aborted": True}
+
+            # Step 2: Test Path 1 on the SAME socket (if still open) to detect keep-alive vs one-shot camera
+            p1 = candidate_paths[1]
+            uri1 = f"rtsp://{host}:{port}{p1}"
+            if not closed0 and writer is not None and not writer.is_closing():
+                reuse_timeout = max(1.8, min(3.5, first_rtt * 4.0)) if is_tor else min(req_timeout, 1.5)
+                try:
+                    req1 = (
+                        f"DESCRIBE {uri1} RTSP/1.0\r\n"
+                        f"CSeq: 2\r\n"
+                        f"User-Agent: {user_agent}\r\n"
+                        f"Accept: application/sdp\r\n\r\n"
+                    )
+                    writer.write(req1.encode())
+                    await writer.drain()
+                    resp1, leftover, closed1 = await self._read_rtsp_message(reader, reuse_timeout, leftover=leftover)
+                    if resp1:
+                        tested += 1
+                        next_start_idx = 2
+                        keepalive_supported = not closed1
+                        if self._is_rtsp_200(resp1):
+                            return {"resolved": True, "url": uri1, "tested": tested, "reachable": True, "hard_refused": False, "auth_401": auth_401, "aborted": False}
+                        if self._is_rtsp_401(resp1):
+                            _record_401(p1, resp1)
+                except HTTPException:
+                    raise
+                except Exception:
+                    keepalive_supported = False
+        finally:
+            await _close_first()
+
+        remaining = candidate_paths[next_start_idx:]
+        if not remaining:
+            return {"resolved": False, "tested": tested, "reachable": reachable, "hard_refused": hard_refused, "auth_401": auth_401, "aborted": False}
+
+        # Step 3A: Keep-alive supported -> fast persistent workers (up to 16 total paths over Tor)
+        if keepalive_supported:
+            if is_tor:
+                remaining = remaining[:14]
+            worker_count = min(2 if is_tor else 4, len(remaining))
+            stop_event = asyncio.Event()
+            adaptive_req_to = max(2.0, min(4.0, first_rtt * 4.5)) if is_tor else req_timeout
+            slices = [remaining[i::worker_count] for i in range(worker_count)]
+            tasks = [
+                asyncio.create_task(
+                    self._probe_paths_persistent(
+                        host, port, sl, timeout=timeout, stop_event=stop_event,
+                        disconnect_check=disconnect_check, req_timeout_override=adaptive_req_to,
+                    )
+                )
+                for sl in slices if sl
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            aborted = False
+            for wr in results:
+                if isinstance(wr, HTTPException):
+                    raise wr
+                if isinstance(wr, dict):
+                    tested += int(wr.get("tested", 0))
+                    if wr.get("aborted"):
+                        aborted = True
+                    for item in wr.get("auth_401", []):
+                        if not any(ex[0] == item[0] for ex in auth_401):
+                            auth_401.append(item)
+                    if wr.get("resolved") and wr.get("url"):
+                        return {"resolved": True, "url": wr["url"], "tested": tested, "reachable": True, "hard_refused": False, "auth_401": auth_401, "aborted": False}
+            return {"resolved": False, "tested": tested, "reachable": reachable, "hard_refused": hard_refused, "auth_401": auth_401, "aborted": aborted}
+
+        # Step 3B: One-shot camera -> clean fresh-socket batches on the warm Tor circuit (zero keep-alive hangs)
+        if is_tor:
+            remaining = remaining[:11]
+        batch_size = 3 if is_tor else 6
+        batch_timeout = max(4.5, min(7.0, first_rtt * 5.0 + 2.0)) if is_tor else timeout
+        for i in range(0, len(remaining), batch_size):
+            if disconnect_check and await disconnect_check():
+                return {"resolved": False, "tested": tested, "reachable": reachable, "hard_refused": False, "auth_401": auth_401, "aborted": True}
+            batch = remaining[i:i + batch_size]
+            tasks = [asyncio.create_task(self.probe_rtsp_path(host, port, p, creds=None, timeout=batch_timeout)) for p in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            tested += len(batch)
+            for res in results:
+                if isinstance(res, HTTPException):
+                    raise res
+                if isinstance(res, tuple):
+                    ok, code, url, rlm, nnc = res
+                    if ok:
+                        return {"resolved": True, "url": url, "tested": tested, "reachable": True, "hard_refused": False, "auth_401": auth_401, "aborted": False}
+                    if code == 401:
+                        p_only = urlparse(url).path + (f"?{urlparse(url).query}" if urlparse(url).query else "")
+                        if not any(ex[0] == p_only for ex in auth_401):
+                            auth_401.append((p_only, rlm, nnc))
+
+        return {"resolved": False, "tested": tested, "reachable": reachable, "hard_refused": hard_refused, "auth_401": auth_401, "aborted": False}
 
     async def _probe_creds_persistent(
         self,
@@ -801,8 +1029,9 @@ class VendorRtspResolver:
         uri = f"rtsp://{host}:{port}{path}"
         user_agent = "Lavf/58.76.100"
         is_tor = tor_service.should_route_via_tor(host)
-        connect_timeout = max(timeout, 8.5) if is_tor else timeout
+        connect_timeout = max(timeout, 12.0) if is_tor else timeout
         req_timeout = max(timeout, 4.5) if is_tor else timeout
+        active_creds = creds_list[:6] if (is_tor and len(creds_list) > 6) else creds_list
 
         reader: Optional[asyncio.StreamReader] = None
         writer: Optional[asyncio.StreamWriter] = None
@@ -852,7 +1081,7 @@ class VendorRtspResolver:
                 cur_alg = am.group(1) or am.group(2)
 
         try:
-            for user, pwd in creds_list:
+            for user, pwd in active_creds:
                 # Up to 2 steps per cred: (1) send with current/cached challenge; (2) if server issued a fresh session nonce, retry on same socket
                 for step in range(2):
                     try:
@@ -992,7 +1221,9 @@ class VendorRtspResolver:
             f"Accept: application/sdp\r\n\r\n"
         )
 
-        eff_timeout = max(timeout, 8.5) if tor_service.should_route_via_tor(host) else timeout
+        is_tor = tor_service.should_route_via_tor(host)
+        eff_timeout = max(timeout, 12.0) if is_tor else timeout
+        read_timeout = max(timeout, 5.0) if is_tor else timeout
 
         try:
             reader, writer = await tor_service.open_connection(
@@ -1004,7 +1235,7 @@ class VendorRtspResolver:
             writer.write(req_initial.encode())
             await writer.drain()
 
-            resp_str = await self._read_rtsp_headers(reader, eff_timeout)
+            resp_str = await self._read_rtsp_headers(reader, read_timeout)
 
             if self._is_rtsp_200(resp_str):
                 writer.close()
@@ -1247,11 +1478,12 @@ class VendorRtspResolver:
         current_url: str = "",
         continuous: bool = True,
         disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
+        exclude_paths: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Automated Vendor RTSP Profile & Continuous Resolver Engine.
-        Executes continuous multi-path probing across vendor profiles and SmartRTSP catalog.
-        - Step 1: Tests ALL candidate paths WITHOUT credentials first.
+        Executes adaptive multi-path probing across vendor profiles and SmartRTSP catalog.
+        - Step 1: Tests candidate paths WITHOUT credentials first (auto-detecting persistent vs one-shot cameras).
         - Step 2: Only if no path works without credentials, tests default vendor credentials across candidate paths.
         - Falls back to HTTP MJPEG video / snapshot validation if RTSP is unreachable.
         """
@@ -1261,29 +1493,31 @@ class VendorRtspResolver:
         vendor_key = self.detect_vendor_key(product)
         profile = VENDOR_RTSP_PROFILES.get(vendor_key, VENDOR_RTSP_PROFILES["generic"])
         generic_profile = VENDOR_RTSP_PROFILES["generic"]
+        excluded_set = set(exclude_paths or [])
 
         # Build prioritized unique list of candidate paths:
         candidate_paths: List[str] = []
 
-        # 1. If current_url has a specific path (and not a generic /live or /onvif1 placeholder), check it first
+        # 1. If current_url has a non-root path not already ruled out, check it first
         if current_url:
             try:
                 parsed = urlparse(current_url)
-                if parsed.path and parsed.path not in ("/", "/live", "/onvif1", ""):
+                if parsed.path and parsed.path not in ("/", ""):
                     full_p = parsed.path + (f"?{parsed.query}" if parsed.query else "")
-                    candidate_paths.append(full_p)
+                    if full_p not in excluded_set:
+                        candidate_paths.append(full_p)
             except Exception:
                 pass
 
         # 2. Add detected vendor profile paths
         for p in profile.get("paths", []):
-            if p not in candidate_paths:
+            if p not in candidate_paths and p not in excluded_set:
                 candidate_paths.append(p)
 
         # 3. If continuous probing requested (or vendor is generic), add all remaining SmartRTSP paths
         if continuous or vendor_key == "generic":
             for p in GENERIC_FALLBACK_PATHS:
-                if p not in candidate_paths:
+                if p not in candidate_paths and p not in excluded_set:
                     candidate_paths.append(p)
 
         # Build credentials list directly from vendor profile (with generic fallback if undetermined)
@@ -1296,67 +1530,48 @@ class VendorRtspResolver:
         tested_count = 0
         auth_required_candidates: List[Tuple[str, Optional[str], Optional[str]]] = []  # (path, realm, nonce)
         rtsp_reachable = False
+        hard_refused = False
 
         # =====================================================================
         # Phase 1: RTSP Probing (Ports 554, 8554 or explicit non-web rtsp:// URLs)
-        # Step 1A: Probe candidate paths WITHOUT credentials reusing persistent TCP connections
+        # Step 1A: Adaptive probing WITHOUT credentials (keep-alive vs one-shot auto-detection)
         # =====================================================================
         if not is_web_camera_port(port) and (port in (554, 8554, 10554, 5544, 7070, 7447, 37777) or "rtsp://" in current_url):
             is_tor = tor_service.should_route_via_tor(ip)
-            if is_tor:
-                candidate_paths = candidate_paths[:12]
             logger.info(
-                f"Persistent RTSP probing (unauthenticated pass, tor={is_tor}) for {ip}:{port} "
+                f"Adaptive RTSP probing (unauthenticated pass, tor={is_tor}) for {ip}:{port} "
                 f"(Vendor: {vendor_key.upper()}, Candidates: {len(candidate_paths)})..."
             )
+            probe_res = await self._probe_paths_adaptive(
+                ip, port, candidate_paths, timeout=1.6, disconnect_check=disconnect_check
+            )
+            tested_count += int(probe_res.get("tested", 0))
+            rtsp_reachable = bool(probe_res.get("reachable"))
+            hard_refused = bool(probe_res.get("hard_refused"))
+            for item in probe_res.get("auth_401", []):
+                if not any(existing[0] == item[0] for existing in auth_required_candidates):
+                    auth_required_candidates.append(item)
 
-            # Use 2 persistent TCP connections over Tor (6 paths each -> ~3-5s total instead of 25-45s),
-            # or 4 persistent connections on direct LAN/WAN.
-            worker_count = min(2 if is_tor else 4, max(1, len(candidate_paths)))
-            stop_event = asyncio.Event()
-            worker_slices = [candidate_paths[idx::worker_count] for idx in range(worker_count)]
-            worker_tasks = [
-                asyncio.create_task(
-                    self._probe_paths_persistent(
-                        ip, port, sl, timeout=1.6, stop_event=stop_event, disconnect_check=disconnect_check
-                    )
-                )
-                for sl in worker_slices
-                if sl
-            ]
-            worker_results = await asyncio.gather(*worker_tasks, return_exceptions=True)
+            if probe_res.get("resolved") and probe_res.get("url"):
+                url = probe_res["url"]
+                return {
+                    "resolved": True,
+                    "reachable": True,
+                    "hard_refused": False,
+                    "protocol": "rtsp",
+                    "stream_url": url,
+                    "vendor": vendor_key,
+                    "tested_count": tested_count,
+                    "auth": "unauthenticated",
+                    "message": f"Resolved unauthenticated RTSP stream on path {urlparse(url).path}"
+                }
 
-            aborted = False
-            for w_res in worker_results:
-                if isinstance(w_res, HTTPException):
-                    raise w_res
-                if isinstance(w_res, dict):
-                    tested_count += int(w_res.get("tested", 0))
-                    if w_res.get("reachable"):
-                        rtsp_reachable = True
-                    if w_res.get("aborted"):
-                        aborted = True
-                    for item in w_res.get("auth_401", []):
-                        if not any(existing[0] == item[0] for existing in auth_required_candidates):
-                            auth_required_candidates.append(item)
-                    if w_res.get("resolved") and w_res.get("url"):
-                        url = w_res["url"]
-                        return {
-                            "resolved": True,
-                            "reachable": True,
-                            "protocol": "rtsp",
-                            "stream_url": url,
-                            "vendor": vendor_key,
-                            "tested_count": tested_count,
-                            "auth": "unauthenticated",
-                            "message": f"Resolved unauthenticated RTSP stream on path {urlparse(url).path}"
-                        }
-
-            if aborted:
+            if probe_res.get("aborted"):
                 logger.info(f"Aborted RTSP probing for {ip}:{port} (client disconnected).")
                 return {
                     "resolved": False,
                     "reachable": rtsp_reachable,
+                    "hard_refused": hard_refused,
                     "protocol": "aborted",
                     "stream_url": current_url,
                     "vendor": vendor_key,
@@ -1551,6 +1766,7 @@ class VendorRtspResolver:
         return {
             "resolved": False,
             "reachable": rtsp_reachable,
+            "hard_refused": hard_refused,
             "protocol": "unknown",
             "stream_url": current_url,
             "vendor": vendor_key,

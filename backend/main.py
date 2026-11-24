@@ -472,7 +472,9 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                 detail="Tor proxy is enabled (fail-closed) but currently unreachable.",
             )
         if tor_service.auto_rotate:
-            await tor_service.rotate_circuit(reason=f"stream_{req.feed_id or 'play'}", verify_ip=False)
+            await tor_service.rotate_circuit(
+                reason=f"stream_{req.feed_id or 'play'}", verify_ip=False, send_newnym=False
+            )
 
     if feed:
 
@@ -647,16 +649,18 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
 
         # ---------------------------------------------------------------------
         # Case B: Camera on Native RTSP Port (554, 8554, etc.)
-        # Verify current path; if non-working or dummy '/live', perform continuous candidate probing
+        # Always verify the feed's existing saved path first (including /onvif1, /live, /11)
+        # so cameras with working paths start in 1 RTT; fall back to adaptive candidate probing if not.
         # ---------------------------------------------------------------------
         parsed_u = urlparse(rtsp_url) if rtsp_url else None
         parsed_p = (parsed_u.path + (f"?{parsed_u.query}" if parsed_u.query else "")) if parsed_u else ""
         existing_creds = (parsed_u.username, parsed_u.password or "") if (parsed_u and parsed_u.username) else None
         product_hint = f"{feed.product or ''} {feed.banner or ''}".strip()
         current_works = False
-        if rtsp_url and parsed_p and parsed_p not in ("/", "/live", "/onvif1"):
+        already_failed_paths: List[str] = []
+        if rtsp_url and parsed_p and parsed_p != "/":
             is_ok, code, target_url, realm, nonce = await rtsp_resolver.probe_rtsp_path(
-                feed.ip, feed.port, parsed_p, creds=existing_creds, timeout=2.2
+                feed.ip, feed.port, parsed_p, creds=existing_creds, timeout=2.5
             )
             if is_ok:
                 rtsp_url = target_url
@@ -670,7 +674,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     product=product_hint,
                     realm=realm,
                     nonce=nonce,
-                    timeout=1.0
+                    timeout=1.5
                 )
                 if retry_ok and used_cred:
                     rtsp_url = auth_url
@@ -680,12 +684,15 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     await db.commit()
                     await db.refresh(feed)
                     current_works = True
+            elif code != 0:
+                already_failed_paths.append(parsed_p)
 
         probed_unverified = False
         if not current_works:
             resolve_res = await rtsp_resolver.resolve_camera(
                 feed.ip, feed.port, product_hint, rtsp_url, continuous=True,
-                disconnect_check=request.is_disconnected
+                disconnect_check=request.is_disconnected,
+                exclude_paths=already_failed_paths,
             )
             if await request.is_disconnected():
                 raise HTTPException(status_code=499, detail="Client disconnected")
@@ -716,7 +723,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     )
             else:
                 probed_unverified = True
-                if resolve_res.get("reachable") is False and not any(
+                if resolve_res.get("hard_refused") is True and not any(
                     k in (rtsp_url or "").lower()
                     for k in ("rtsp.stream", "pattern", "demo", "simulated", "198.51.100", "203.0.113", "192.0.2")
                 ):
@@ -731,7 +738,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                         stream_type="offline",
                         tor_routed=tor_service.should_route_via_tor(feed.ip),
                         tor_circuit_id=None,
-                        message=f"RTSP port {feed.port} unreachable or filtered"
+                        message=f"RTSP port {feed.port} actively refused connection"
                     )
 
     if not rtsp_url:
@@ -1306,6 +1313,7 @@ async def get_stream_status(
     raw_hls_crashed = bool(status_info.get("hls_crashed")) or (
         status_info.get("hls_status") == 500 and status_info.get("bytes_received", 0) > 16384
     )
+    non_hls_video = mediamtx_service._has_non_hls_video(tracks)
     effective_force_fix = bool(force_hls_fix or raw_hls_crashed)
     if (
         hls_audio
@@ -1317,6 +1325,18 @@ async def get_stream_status(
             safe_name, tracks, force_video_transcode=effective_force_fix
         )
         status_info.update(aac_info)
+
+    hls_needs_transcode = bool(effective_force_fix or non_hls_video)
+    aac_stream_path = status_info.get("aac_stream_path")
+    if aac_stream_path:
+        effective_hls_path = aac_stream_path
+    elif status_info.get("hls_ready") and not hls_needs_transcode:
+        effective_hls_path = safe_name
+    else:
+        effective_hls_path = None
+
+    status_info["hls_needs_transcode"] = hls_needs_transcode
+    status_info["effective_hls_path"] = effective_hls_path
     return status_info
 
 @app.post("/api/streams/stop")

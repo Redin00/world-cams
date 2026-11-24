@@ -663,8 +663,14 @@ class StreamPlayer {
     }
 
     if (this.techPort) this.techPort.textContent = isAltRtsp ? '8554 (Alt RTSP)' : `${portNum} (RTSP Stream)`;
+    const torEnabledNow = Boolean(window.app?.torStatus?.enabled);
     if (this.techProto) this.techProto.textContent = isAltRtsp ? 'MediaMTX (Negotiating Alt RTSP 8554...)' : 'MediaMTX (Negotiating RTSP...)';
-    this.setStatus('CONNECTING', isAltRtsp ? 'Bridging Alt RTSP 8554 stream with MediaMTX...' : 'Bridging RTSP stream with MediaMTX...');
+    this.setStatus(
+      'CONNECTING',
+      torEnabledNow
+        ? 'Probing RTSP path & bridging stream over Tor...'
+        : (isAltRtsp ? 'Bridging Alt RTSP 8554 stream with MediaMTX...' : 'Bridging RTSP stream with MediaMTX...')
+    );
 
     // Load preview snapshot via isolated proxy or safe placeholder while connecting
     const fallbackThumb = this.getSafeSnapshotSrc(feed);
@@ -681,7 +687,7 @@ class StreamPlayer {
     this.snapshotEl.src = fallbackThumb;
 
     // Safety timeout: if backend /api/streams/play hangs, attempt fallback vendor resolution
-    const connectTimeoutMs = window.app?.torStatus?.enabled ? 60000 : 25000;
+    const connectTimeoutMs = torEnabledNow ? 90000 : 30000;
     this.connectTimeoutTimer = setTimeout(async () => {
       if (this.activeFeedId !== targetId) return;
       if (this.badgeEl && this.badgeEl.textContent.includes('CONNECTING')) {
@@ -907,20 +913,65 @@ class StreamPlayer {
     if (window.Hls && window.Hls.isSupported()) {
       const overTor = Boolean(this.currentFeedTorRouted);
       const hls = new window.Hls({
-        lowLatencyMode: !overTor,
+        // Match MediaMTX fMP4 variant: standard fMP4 HLS avoids LL-HLS blocking reload 404s behind Nginx/Cloudflare/Tor
+        lowLatencyMode: false,
         liveSyncDurationCount: overTor ? 3 : 2,
-        liveMaxLatencyDurationCount: overTor ? 10 : 6,
-        maxLiveSyncPlaybackRate: overTor ? 1.25 : 1.5,
+        liveMaxLatencyDurationCount: overTor ? 10 : 7,
+        maxLiveSyncPlaybackRate: overTor ? 1.25 : 1.4,
         enableWorker: true,
         manifestLoadingMaxRetry: 2,
-        manifestLoadingRetryDelay: 800,
-        manifestLoadingTimeOut: overTor ? 15000 : 10000,
+        manifestLoadingRetryDelay: 900,
+        manifestLoadingTimeOut: overTor ? 18000 : 12000,
         levelLoadingMaxRetry: 3,
-        levelLoadingTimeOut: overTor ? 18000 : 10000,
+        levelLoadingTimeOut: overTor ? 18000 : 12000,
         fragLoadingMaxRetry: 3,
-        fragLoadingTimeOut: overTor ? 22000 : 12000,
+        fragLoadingTimeOut: overTor ? 22000 : 14000,
       });
       this.hlsInstance = hls;
+
+      const showFatalOffline = (msg) => {
+        this.activeHlsPath = null;
+        this.teardownMediaEngines();
+        const hasLiveSnapshot = feed.screenshot_url && !feed.screenshot_url.includes('unsplash');
+        if (this.isSnapshotLoaded && hasLiveSnapshot) {
+          this.setStatus('SNAPSHOT (RTSP BLOCKED)', 'HLS stream interrupted. Displaying HTTP snapshot.');
+        } else {
+          this.setStatus('RTSP OFFLINE', msg || 'HLS stream interrupted or camera disconnected.');
+        }
+      };
+
+      const recoverSession404 = async () => {
+        const basePath = this.activeStreamData?.stream_path;
+        if (!basePath || this.activeFeedId !== targetId || this.hlsInstance !== hls) return;
+        try {
+          const stRes = await fetch(
+            `/api/streams/status/${encodeURIComponent(basePath)}?hls_audio=true${this.forceHlsFixRequested ? '&force_hls_fix=true' : ''}`,
+            { signal: this.abortController ? this.abortController.signal : undefined }
+          );
+          if (this.activeFeedId !== targetId || this.hlsInstance !== hls) return;
+          if (stRes.ok) {
+            const st = await stRes.json();
+            if (this.activeFeedId !== targetId || this.hlsInstance !== hls) return;
+            if (st.effective_hls_path) {
+              const freshUrl = `/api/hls/${encodeURIComponent(st.effective_hls_path)}/index.m3u8`;
+              this.activeHlsPath = st.effective_hls_path;
+              hls.loadSource(freshUrl);
+              return;
+            }
+            if (st.ready) {
+              // Camera reconnected and is buffering its first keyframe again -> hand cleanly back to telemetry waiter
+              this.activeHlsPath = null;
+              this.teardownMediaEngines();
+              this.setStatus('CONNECTING', 'Camera reconnected — re-buffering HLS stream...');
+              this.monitorRtspTelemetry(basePath, targetId, feed, isAltRtsp, this.forceHlsFixRequested);
+              return;
+            }
+          }
+        } catch (err) {
+          if (err && err.name === 'AbortError') return;
+        }
+        showFatalOffline('Stream disconnected or unavailable in MediaMTX.');
+      };
 
       hls.on(window.Hls.Events.MEDIA_ATTACHED, () => {
         if (this.activeFeedId === targetId && this.hlsInstance === hls) {
@@ -974,25 +1025,24 @@ class StreamPlayer {
             return;
           }
 
-          if (httpCode === 404 && data.details === 'manifestLoadError') {
-            if (this.hlsNetworkRetries < 1) {
+          // 404 usually means MediaMTX rotated/closed the HLS session after a brief camera blip; verify status before reloading
+          if (httpCode === 404) {
+            if (this.hlsNetworkRetries < 2) {
               this.hlsNetworkRetries++;
               setTimeout(() => {
                 if (this.activeFeedId === targetId && this.hlsInstance === hls) {
-                  hls.loadSource(manifestUrl);
+                  recoverSession404();
                 }
-              }, 1000);
+              }, 1200);
               return;
             }
-            this.activeHlsPath = null;
-            this.teardownMediaEngines();
-            this.setStatus('RTSP OFFLINE', 'Stream disconnected or unavailable in MediaMTX.');
+            showFatalOffline('Stream disconnected or unavailable in MediaMTX.');
             return;
           }
 
           if (this.hlsNetworkRetries < 3) {
             this.hlsNetworkRetries++;
-            const reloadManifest = httpCode === 404 || data.details === 'manifestLoadError';
+            const reloadManifest = data.details === 'manifestLoadError';
             setTimeout(() => {
               if (this.activeFeedId === targetId && this.hlsInstance === hls) {
                 if (reloadManifest) {
@@ -1001,7 +1051,7 @@ class StreamPlayer {
                   hls.startLoad();
                 }
               }
-            }, 900);
+            }, 1000);
             return;
           }
         }
@@ -1021,14 +1071,7 @@ class StreamPlayer {
           return;
         }
 
-        this.activeHlsPath = null;
-        this.teardownMediaEngines();
-        const hasLiveSnapshot = feed.screenshot_url && !feed.screenshot_url.includes('unsplash');
-        if (this.isSnapshotLoaded && hasLiveSnapshot) {
-          this.setStatus('SNAPSHOT (RTSP BLOCKED)', 'HLS stream interrupted. Displaying HTTP snapshot.');
-        } else {
-          this.setStatus('RTSP OFFLINE', 'HLS stream interrupted or camera disconnected.');
-        }
+        showFatalOffline('HLS stream interrupted or camera disconnected.');
       });
 
       this.videoEl.onplay = () => {
@@ -1197,14 +1240,17 @@ class StreamPlayer {
     const token = (this.telemetryToken || 0) + 1;
     this.telemetryToken = token;
 
-    let unreadyAttempts = 0;
-    let totalPolls = 0;
-    const maxUnreadyAttempts = this.currentFeedTorRouted ? 20 : 12; // ~18s over Tor, ~10.8s direct
-    const maxHlsWaitPolls = this.currentFeedTorRouted ? 22 : 16;
-    const maxTotalPolls = maxUnreadyAttempts + maxHlsWaitPolls + 15;
+    const overTor = Boolean(this.currentFeedTorRouted);
+    const startedAt = Date.now();
+    const connectDeadline = startedAt + (overTor ? 30000 : 14000);
+    const hlsBudgetMs = overTor ? 30000 : 20000;
+    const rawFallbackTranscodeMs = overTor ? 15000 : 11000;
+    const audioPreWaitMs = 5500;
+    const audioPostWaitMs = 22000;
+
+    let firstReadyAt = 0;
+    let playbackStartedAt = 0;
     let playbackStarted = false;
-    let aacWaitPolls = 0;
-    let hlsMuxWaitPolls = 0;
     let aacSwitched = false;
     let forceHlsFix = Boolean(initialForceFix);
 
@@ -1215,20 +1261,18 @@ class StreamPlayer {
       }
     };
 
-    const scheduleNext = () => {
+    const scheduleNext = (delayMs = 900) => {
       if (this.activeFeedId !== targetId || this.telemetryToken !== token) return;
-      this.telemetryInterval = setTimeout(runPoll, 900);
+      this.telemetryInterval = setTimeout(runPoll, delayMs);
     };
 
     const runPoll = async () => {
       this.telemetryInterval = null;
-      // If user switched camera or another poller started in the meantime, terminate
       if (this.activeFeedId !== targetId || this.telemetryToken !== token) {
         return;
       }
 
-      totalPolls++;
-      let streamWasReady = false;
+      const now = Date.now();
       try {
         const statusUrl = this.isHlsMode
           ? `/api/streams/status/${encodeURIComponent(streamName)}?hls_audio=true${forceHlsFix ? '&force_hls_fix=true' : ''}`
@@ -1242,9 +1286,10 @@ class StreamPlayer {
           const status = await res.json();
           if (this.activeFeedId !== targetId || this.telemetryToken !== token) return;
 
-          // If MediaMTX has connected, decoded tracks, and is actively serving video:
           if (status.ready && (status.bytes_received > 0 || (status.tracks && status.tracks.length > 0))) {
-            streamWasReady = true;
+            if (!firstReadyAt) firstReadyAt = now;
+            const readyElapsed = now - firstReadyAt;
+
             const codecUpper = (status.codec || '').toUpperCase();
             let switchedToHlsJustNow = false;
             const nonWebRtcVideo = (
@@ -1258,34 +1303,40 @@ class StreamPlayer {
               this.isHlsMode = true;
               switchedToHlsJustNow = true;
               playbackStarted = false;
+              firstReadyAt = now;
             }
 
             if (this.isHlsMode) {
               if (status.hls_crashed) {
                 forceHlsFix = true;
               }
-              // When forceHlsFix is active, wait for the transcoded _aac sidecar directly; otherwise wait up to 5 polls (~4.5s)
-              const waitingOnSidecar = !status.aac_stream_path && (
-                forceHlsFix || status.hls_crashed || (status.aac_pending && aacWaitPolls < 5)
+              const effectivePath = status.effective_hls_path || (
+                status.aac_stream_path || (status.hls_ready && !forceHlsFix && !status.hls_needs_transcode ? streamName : null)
               );
-              const canLoadHlsNow = Boolean(status.aac_stream_path) || (Boolean(status.hls_ready) && !waitingOnSidecar);
+              const waitingAudioPreStart = (
+                !status.aac_stream_path &&
+                Boolean(status.aac_pending) &&
+                !forceHlsFix &&
+                !status.hls_needs_transcode &&
+                readyElapsed < audioPreWaitMs
+              );
+              const targetHlsPath = waitingAudioPreStart ? null : effectivePath;
 
-              if (!playbackStarted && !canLoadHlsNow) {
-                if (hlsMuxWaitPolls < maxHlsWaitPolls && totalPolls < maxTotalPolls) {
-                  hlsMuxWaitPolls++;
-                  if (status.aac_pending) aacWaitPolls++;
-                  if (!status.hls_ready && !status.aac_pending && status.bytes_received > 0 && hlsMuxWaitPolls >= 3) {
+              if (!playbackStarted && !targetHlsPath) {
+                if (readyElapsed < hlsBudgetMs) {
+                  // Only escalate raw H.264 to libx264 transcode if raw HLS stayed unready for >11-15s (never on slow-GOP poll 3!)
+                  if (!status.hls_ready && !status.aac_pending && !forceHlsFix && status.bytes_received > 0 && readyElapsed >= rawFallbackTranscodeMs) {
                     forceHlsFix = true;
                   }
                   this.setStatus(
                     'CONNECTING',
-                    forceHlsFix
+                    (forceHlsFix || status.hls_needs_transcode)
                       ? 'Transcoding video & audio to browser-compatible H.264/AAC...'
                       : (status.aac_pending
                         ? 'Preparing HLS stream with compatible AAC audio...'
                         : 'Buffering first HLS video keyframe...')
                   );
-                  scheduleNext();
+                  scheduleNext(800);
                   return;
                 }
 
@@ -1303,27 +1354,36 @@ class StreamPlayer {
                 }
                 return;
               }
-            }
 
-            if (this.overlayEl) this.overlayEl.style.display = 'none';
-            if (this.snapshotEl) this.snapshotEl.style.display = 'none';
-            if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
-            if (this.videoEl) this.videoEl.style.display = 'block';
+              if (this.overlayEl) this.overlayEl.style.display = 'none';
+              if (this.snapshotEl) this.snapshotEl.style.display = 'none';
+              if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
+              if (this.videoEl) this.videoEl.style.display = 'block';
+              this.setStatus('LIVE HLS');
 
-            this.setStatus(this.isHlsMode ? 'LIVE HLS' : 'LIVE WEBRTC');
-
-            if (this.isHlsMode) {
               if (!aacSwitched && status.aac_stream_path) {
                 this.attachHlsStream(status.aac_stream_path, targetId, feed, isAltRtsp, playbackStarted);
+                if (!playbackStarted) playbackStartedAt = now;
                 playbackStarted = true;
                 aacSwitched = true;
-              } else if (!playbackStarted) {
-                this.attachHlsStream(streamName, targetId, feed, isAltRtsp, false);
+              } else if (!playbackStarted && targetHlsPath) {
+                this.attachHlsStream(targetHlsPath, targetId, feed, isAltRtsp, false);
+                playbackStartedAt = now;
                 playbackStarted = true;
+                if (targetHlsPath.endsWith('_aac')) aacSwitched = true;
               }
-            } else if (!playbackStarted) {
-              playbackStarted = true;
-              this.attachWebRtcStream(streamName, targetId, feed, isAltRtsp);
+            } else {
+              if (this.overlayEl) this.overlayEl.style.display = 'none';
+              if (this.snapshotEl) this.snapshotEl.style.display = 'none';
+              if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
+              if (this.videoEl) this.videoEl.style.display = 'block';
+              this.setStatus('LIVE WEBRTC');
+
+              if (!playbackStarted) {
+                playbackStarted = true;
+                playbackStartedAt = now;
+                this.attachWebRtcStream(streamName, targetId, feed, isAltRtsp);
+              }
             }
 
             const tracksArr = Array.isArray(status.tracks) ? status.tracks : [];
@@ -1357,10 +1417,12 @@ class StreamPlayer {
                 : `MediaMTX ${protoLabel} Verified: ${codecInfo}${resInfo}${audioBadge}${byteInfo}`) + torSuffix;
             }
 
-            // Keep polling while HLS sidecar warms up (or right after an H265/non-WebRTC upgrade to HLS)
-            if (switchedToHlsJustNow || (this.isHlsMode && !aacSwitched && status.aac_pending && aacWaitPolls < 20)) {
-              aacWaitPolls++;
-              scheduleNext();
+            // Keep polling while HLS audio sidecar warms up (or right after a non-WebRTC upgrade to HLS)
+            if (
+              switchedToHlsJustNow ||
+              (this.isHlsMode && !aacSwitched && status.aac_pending && (now - playbackStartedAt) < audioPostWaitMs)
+            ) {
+              scheduleNext(1000);
               return;
             }
             stopPoller();
@@ -1379,12 +1441,8 @@ class StreamPlayer {
         return;
       }
 
-      if (!streamWasReady) {
-        unreadyAttempts++;
-      }
-
-      // If max attempts reached and stream never decoded frames, trigger automated multi-path resolution
-      if (unreadyAttempts >= maxUnreadyAttempts || totalPolls >= maxTotalPolls) {
+      const activeDeadline = firstReadyAt ? (firstReadyAt + hlsBudgetMs) : connectDeadline;
+      if (Date.now() >= activeDeadline) {
         stopPoller();
         if (this.activeFeedId !== targetId || this.telemetryToken !== token) return;
 
@@ -1436,7 +1494,6 @@ class StreamPlayer {
           }
         }
 
-        // If resolution did not yield working RTSP stream, fall back to isolated snapshot or offline
         if (this.activeFeedId !== targetId) return;
         const hasLiveSnapshot = feed.screenshot_url && !feed.screenshot_url.includes('unsplash');
         if (hasLiveSnapshot) {
@@ -1455,11 +1512,11 @@ class StreamPlayer {
         return;
       }
 
-      scheduleNext();
+      scheduleNext(900);
     };
 
     // Start first telemetry poll promptly
-    this.telemetryInterval = setTimeout(runPoll, 500);
+    this.telemetryInterval = setTimeout(runPoll, 450);
   }
 }
 

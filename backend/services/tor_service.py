@@ -8,6 +8,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
@@ -19,6 +20,13 @@ from fastapi import HTTPException
 from backend.config import BASE_DIR, settings
 
 logger = logging.getLogger("worldcams.tor")
+
+
+class TorSocksConnectError(ConnectionError):
+    """Raised when Tor SOCKS5 CONNECT fails, preserving RFC 1928 reply code."""
+    def __init__(self, message: str, reply_code: int = 0):
+        super().__init__(message)
+        self.reply_code = reply_code
 
 
 class TorProxyService:
@@ -269,11 +277,17 @@ class TorProxyService:
 
         return {"ip": None, "country": None, "isp": None}
 
-    async def rotate_circuit(self, reason: str = "manual", verify_ip: bool = False) -> Dict[str, Any]:
+    async def rotate_circuit(
+        self,
+        reason: str = "manual",
+        verify_ip: bool = False,
+        send_newnym: bool = True,
+    ) -> Dict[str, Any]:
         """
         Rotate to a new Tor circuit immediately:
         1. Increment `circuit_generation` and rotate `_circuit_salt` (triggers IsolateSocksAuth).
-        2. Send `SIGNAL NEWNYM` to Tor ControlPort if reachable.
+        2. Optionally send `SIGNAL NEWNYM` to Tor ControlPort (skipped on per-stream auto_rotate so
+           Tor keeps its pre-built clean circuit pool warm instead of stalling 5-10s rebuilding).
         3. Clear cached exit IP and optionally query the new exit node IP.
         """
         self.circuit_generation += 1
@@ -285,7 +299,7 @@ class TorProxyService:
         self.cached_exit_isp = None
 
         await self.stop_all_bridges()
-        newnym_sent = await self._send_control_newnym()
+        newnym_sent = await self._send_control_newnym() if send_newnym else False
         logger.info(
             f"[TOR] Rotated circuit -> {self.current_circuit_id} "
             f"(reason={reason}, control_newnym={'ok' if newnym_sent else 'isolate-auth'})"
@@ -343,27 +357,20 @@ class TorProxyService:
             follow_redirects=follow_redirects,
         )
 
-    async def open_connection(
+    async def _open_socks5_once(
         self,
         ip: str,
         port: int,
-        timeout: float = 4.0,
+        timeout: float,
         circuit_key: Optional[str] = None,
     ) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        """
-        Open a TCP connection to `(ip, port)`, tunneled via Tor SOCKS5 (RFC 1928 + RFC 1929)
-        when Tor is enabled for the target. Fail-closed if SOCKS5 proxy is unreachable.
-        """
-        if not self.should_route_via_tor(ip):
-            return await asyncio.wait_for(asyncio.open_connection(ip, int(port)), timeout=timeout)
-
         # Fail-closed connect to SOCKS5 proxy
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.socks_host, self.socks_port),
                 timeout=max(timeout, 3.0),
             )
-        except Exception as e:
+        except Exception:
             if self.socks_port in (9050, 9150) and await self.ensure_tor_daemon():
                 reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(self.socks_host, self.socks_port),
@@ -381,7 +388,7 @@ class TorProxyService:
             await asyncio.wait_for(writer.drain(), timeout=timeout)
             ver, method = await asyncio.wait_for(reader.readexactly(2), timeout=timeout)
             if ver != 5 or method == 0xFF:
-                raise ConnectionError(f"SOCKS5 handshake rejected (ver={ver}, method={method})")
+                raise TorSocksConnectError(f"SOCKS5 handshake rejected (ver={ver}, method={method})", reply_code=1)
 
             # RFC 1929 Username/Password Authentication (IsolateSocksAuth)
             if method == 0x02:
@@ -393,9 +400,9 @@ class TorProxyService:
                 await asyncio.wait_for(writer.drain(), timeout=timeout)
                 auth_ver, auth_status = await asyncio.wait_for(reader.readexactly(2), timeout=timeout)
                 if auth_ver != 1 or auth_status != 0x00:
-                    raise ConnectionError(f"SOCKS5 authentication failed (status={auth_status})")
+                    raise TorSocksConnectError(f"SOCKS5 authentication failed (status={auth_status})", reply_code=1)
             elif method != 0x00:
-                raise ConnectionError(f"Unsupported SOCKS5 auth method selected: {method}")
+                raise TorSocksConnectError(f"Unsupported SOCKS5 auth method selected: {method}", reply_code=1)
 
             # SOCKS5 CONNECT command
             clean_host = self._extract_host(ip) or ip.strip().strip("[]")
@@ -416,7 +423,10 @@ class TorProxyService:
             rep_hdr = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
             r_ver, rep_code, _rsv, atyp = rep_hdr
             if r_ver != 5 or rep_code != 0x00:
-                raise ConnectionError(f"SOCKS5 CONNECT to {clean_host}:{port} failed with reply code {rep_code}")
+                raise TorSocksConnectError(
+                    f"SOCKS5 CONNECT to {clean_host}:{port} failed with reply code {rep_code}",
+                    reply_code=int(rep_code),
+                )
 
             # Consume bound address + bound port
             if atyp == 1:
@@ -435,6 +445,37 @@ class TorProxyService:
                 await writer.wait_closed()
             except Exception:
                 pass
+            raise
+
+    async def open_connection(
+        self,
+        ip: str,
+        port: int,
+        timeout: float = 4.0,
+        circuit_key: Optional[str] = None,
+        retry_alt_exit: bool = True,
+    ) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """
+        Open a TCP connection to `(ip, port)`, tunneled via Tor SOCKS5 (RFC 1928 + RFC 1929)
+        when Tor is enabled for the target. Fail-closed if SOCKS5 proxy is unreachable.
+        If a Tor exit node rejects the port (reply 0x01/0x02/0x06), retries once on an isolated
+        alternate circuit so Tor selects a different exit node.
+        """
+        if not self.should_route_via_tor(ip):
+            return await asyncio.wait_for(asyncio.open_connection(ip, int(port)), timeout=timeout)
+
+        eff_timeout = max(float(timeout), 10.0)
+        base_key = circuit_key or f"{ip}:{port}"
+        try:
+            return await self._open_socks5_once(ip, port, eff_timeout, circuit_key=base_key)
+        except HTTPException:
+            raise
+        except TorSocksConnectError as e:
+            # 0x05 = target actively refused connection; 0x01/0x02/0x06 = Tor exit policy / circuit failure
+            if retry_alt_exit and e.reply_code in (1, 2, 6):
+                alt_key = f"{base_key}_e{secrets.token_hex(2)}"
+                logger.debug(f"[TOR] Exit failure (code={e.reply_code}) for {ip}:{port}; retrying via {alt_key}")
+                return await self._open_socks5_once(ip, port, eff_timeout, circuit_key=alt_key)
             raise
 
     @staticmethod
@@ -576,24 +617,30 @@ class TorProxyService:
                 await self._close_bridge_entry(existing)
                 self._bridges.pop(clean_path, None)
 
-            remote_host_port = f"{cam_ip}:{int(cam_port)}".encode("utf-8")
-            holder: Dict[str, Any] = {"local_port": 0}
+            remote_host_port = f"[{cam_ip}]:{int(cam_port)}".encode("utf-8") if ":" in cam_ip else f"{cam_ip}:{int(cam_port)}".encode("utf-8")
+            active_writers: set = set()
+            holder: Dict[str, Any] = {"local_port": 0, "fail_count": 0}
 
             async def _handle_bridge_client(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
                 remote_reader: Optional[asyncio.StreamReader] = None
                 remote_writer: Optional[asyncio.StreamWriter] = None
+                active_writers.add(client_writer)
                 local_port_val = holder["local_port"]
                 local_variants = [
                     f"127.0.0.1:{local_port_val}".encode("utf-8"),
                     f"localhost:{local_port_val}".encode("utf-8"),
                 ]
+                t_start = time.monotonic()
+                base_ck = circuit_key or f"{cam_ip}:{cam_port}"
+                eff_ck = base_ck if holder["fail_count"] == 0 else f"{base_ck}_t{holder['fail_count']}"
                 try:
                     remote_reader, remote_writer = await self.open_connection(
                         cam_ip,
                         int(cam_port),
-                        timeout=18.0,
-                        circuit_key=circuit_key or clean_path,
+                        timeout=20.0,
+                        circuit_key=eff_ck,
                     )
+                    active_writers.add(remote_writer)
 
                     async def _c2r():
                         try:
@@ -645,11 +692,17 @@ class TorProxyService:
                                 pass
 
                     await asyncio.gather(_c2r(), _r2c(), return_exceptions=True)
+                    if (time.monotonic() - t_start) < 8.0:
+                        holder["fail_count"] += 1
+                    else:
+                        holder["fail_count"] = 0
                 except Exception as e:
+                    holder["fail_count"] += 1
                     logger.debug(f"Tor RTSP bridge tunnel error for {clean_path} -> {cam_ip}:{cam_port}: {e}")
                 finally:
                     for w in (client_writer, remote_writer):
                         if w is not None:
+                            active_writers.discard(w)
                             try:
                                 w.close()
                             except Exception:
@@ -661,6 +714,7 @@ class TorProxyService:
 
             self._bridges[clean_path] = {
                 "server": server,
+                "active_writers": active_writers,
                 "local_port": local_port,
                 "cam_ip": cam_ip,
                 "cam_port": int(cam_port),
@@ -675,11 +729,20 @@ class TorProxyService:
             return local_port
 
     async def _close_bridge_entry(self, entry: Dict[str, Any]) -> None:
+        # Close active tunnel sockets first so Python 3.12+ Server.wait_closed() NEVER deadlocks
+        # waiting on a live MediaMTX pull socket during camera switches or circuit rotation!
+        for w in list(entry.get("active_writers") or ()):
+            try:
+                w.close()
+            except Exception:
+                pass
         srv = entry.get("server")
         if srv is not None:
             try:
                 srv.close()
-                await srv.wait_closed()
+                if hasattr(srv, "close_clients"):
+                    srv.close_clients()
+                await asyncio.wait_for(srv.wait_closed(), timeout=1.5)
             except Exception:
                 pass
 

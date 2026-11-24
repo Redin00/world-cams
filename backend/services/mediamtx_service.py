@@ -31,6 +31,15 @@ class MediaMTXService:
         self._sidecar_video_transcoded: Dict[str, bool] = {}
         self._sidecar_started_at: Dict[str, float] = {}
         self._hls_verified: set = set()
+        self._hls_probe_tasks: Dict[str, asyncio.Task] = {}
+        self._hls_probe_result: Dict[str, tuple[int, bool]] = {}
+
+    def _clear_hls_probe_state(self, clean_path: str) -> None:
+        self._hls_verified.discard(clean_path)
+        self._hls_probe_result.pop(clean_path, None)
+        task = self._hls_probe_tasks.pop(clean_path, None)
+        if task is not None and not task.done():
+            task.cancel()
 
     @staticmethod
     def _resolve_local_url(configured_url: str, default_port: int) -> str:
@@ -207,8 +216,8 @@ class MediaMTXService:
         async with self._get_path_lock(clean_path):
             self._sidecar_video_transcoded.pop(clean_path, None)
             self._sidecar_started_at.pop(clean_path, None)
-            self._hls_verified.discard(clean_path)
-            self._hls_verified.discard(f"{clean_path}_aac")
+            self._clear_hls_probe_state(clean_path)
+            self._clear_hls_probe_state(f"{clean_path}_aac")
             async with httpx.AsyncClient(timeout=4.0) as client:
                 try:
                     # Re-add if path already exists so stale runOnInit/source fields or old _aac sidecar never conflict
@@ -321,7 +330,7 @@ class MediaMTXService:
                     hls_status = 0
                     hls_crashed = False
                     if not ready:
-                        self._hls_verified.discard(clean)
+                        self._clear_hls_probe_state(clean)
                     if check_hls and ready and bytes_rx > 0 and not self._has_non_hls_video(tracks):
                         hls_status, hls_crashed = await self._probe_hls_manifest_detail(clean, client)
                         hls_ready = hls_status == 200
@@ -388,13 +397,29 @@ class MediaMTXService:
         """Return True when HLS playback needs an ffmpeg sidecar (non-HLS audio or non-HLS video)."""
         return cls._has_non_hls_audio(tracks) or cls._has_non_hls_video(tracks)
 
+    def _build_sidecar_ffmpeg_cmd(self, clean: str, aac_path: str, transcode_video: bool) -> str:
+        ff_log = "error" if settings.STREAM_DEBUG else "quiet"
+        if transcode_video:
+            v_args = "-c:v libx264 -preset ultrafast -tune zerolatency -bf 0 -g 15 -pix_fmt yuv420p"
+        else:
+            v_args = "-c:v copy"
+        return (
+            f"ffmpeg -nostdin -loglevel {ff_log} -rtsp_transport tcp -fflags +discardcorrupt "
+            f"-analyzeduration 2500000 -probesize 2500000 -max_delay 1000000 "
+            f"-i rtsp://127.0.0.1:{self.rtsp_port}/{clean} "
+            f"-map 0:v:0 -map 0:a:0? {v_args} "
+            f"-af aresample=async=1 -c:a aac -ar 44100 -ac 1 -b:a 64k "
+            f"-rtsp_transport tcp -f rtsp rtsp://127.0.0.1:{self.rtsp_port}/{aac_path}"
+        )
+
     async def ensure_hls_aac_sidecar(
         self, clean_path: str, tracks: Optional[List[str]] = None, force_video_transcode: bool = False
     ) -> Dict[str, Any]:
         """
         Hybrid HLS sidecar: reads from MediaMTX's already-connected local RTSP path
-        and publishes `<clean_path>_aac` (copying H264/H265 video and converting audio to AAC,
-        or transcoding M-JPEG/MPEG-4/incompatible video to H264 if needed) so the original stream never breaks.
+        and publishes `<clean_path>_aac` (copying H264/H265 video and converting audio to AAC
+        with async resampling, or transcoding M-JPEG/MPEG-4/incompatible video to H264 -bf 0)
+        so the original stream never breaks.
         """
         if not settings.MEDIAMTX_HLS_TRANSCODE_AUDIO or shutil.which("ffmpeg") is None:
             return {"aac_stream_path": None, "aac_pending": False}
@@ -416,27 +441,15 @@ class MediaMTXService:
                         and not self._sidecar_video_transcoded.get(clean, False)
                     ):
                         await client.delete(f"{self.api_url}/v3/config/paths/delete/{aac_path}")
+                        self._clear_hls_probe_state(aac_path)
                         cfg_res = None
 
                     if cfg_res is None or cfg_res.status_code != 200:
-                        self._hls_verified.discard(aac_path)
-                        ff_log = "error" if settings.STREAM_DEBUG else "quiet"
-                        if transcode_video:
-                            v_args = "-c:v libx264 -preset ultrafast -tune zerolatency -bf 0 -g 15 -pix_fmt yuv420p"
-                            map_args = "-map 0:v:0 -map 0:a:0?"
-                        else:
-                            v_args = "-c:v copy"
-                            map_args = "-map 0:v:0 -map 0:a:0"
-                        ffmpeg_cmd = (
-                            f"ffmpeg -nostdin -loglevel {ff_log} -rtsp_transport tcp -fflags +discardcorrupt "
-                            f"-analyzeduration 3000000 -probesize 3000000 -max_delay 1000000 "
-                            f"-i rtsp://127.0.0.1:{self.rtsp_port}/{clean} "
-                            f"{map_args} {v_args} -c:a aac -ar 44100 -ac 1 -b:a 48k "
-                            f"-rtsp_transport tcp -f rtsp rtsp://127.0.0.1:{self.rtsp_port}/{aac_path}"
-                        )
+                        self._clear_hls_probe_state(aac_path)
+                        ffmpeg_cmd = self._build_sidecar_ffmpeg_cmd(clean, aac_path, transcode_video)
                         add_res = await client.post(
                             f"{self.api_url}/v3/config/paths/add/{aac_path}",
-                            json={"runOnInit": ffmpeg_cmd, "runOnInitRestart": False},
+                            json={"runOnInit": ffmpeg_cmd, "runOnInitRestart": True},
                         )
                         self._sidecar_video_transcoded[clean] = transcode_video
                         self._sidecar_started_at[clean] = time.monotonic()
@@ -448,11 +461,18 @@ class MediaMTXService:
                         return {"aac_stream_path": None, "aac_pending": True}
 
                     path_res = await client.get(f"{self.api_url}/v3/paths/get/{aac_path}")
+                    started_at = self._sidecar_started_at.get(clean, 0.0)
+                    elapsed = (time.monotonic() - started_at) if started_at else 0.0
                     if path_res.status_code == 200:
                         pdata = path_res.json()
                         ptracks = pdata.get("tracks", [])
                         pbytes = pdata.get("bytesReceived", 0)
-                        has_aac = transcode_video or any("MPEG-4 AUDIO" in str(t).upper() for t in ptracks)
+                        # Allow video-only sidecar after 4s if camera declared an empty/silent audio track
+                        has_aac = (
+                            transcode_video
+                            or any("MPEG-4 AUDIO" in str(t).upper() for t in ptracks)
+                            or (elapsed >= 4.0 and pbytes > 8192)
+                        )
                         manifest_status = 0
                         manifest_crashed = False
                         if pdata.get("ready") and pbytes > 2048 and has_aac:
@@ -476,19 +496,11 @@ class MediaMTXService:
                                 "auto-upgrading sidecar to H.264 (-bf 0) + AAC."
                             )
                             await client.delete(f"{self.api_url}/v3/config/paths/delete/{aac_path}")
-                            self._hls_verified.discard(aac_path)
-                            ff_log = "error" if settings.STREAM_DEBUG else "quiet"
-                            fix_cmd = (
-                                f"ffmpeg -nostdin -loglevel {ff_log} -rtsp_transport tcp -fflags +discardcorrupt "
-                                f"-analyzeduration 3000000 -probesize 3000000 -max_delay 1000000 "
-                                f"-i rtsp://127.0.0.1:{self.rtsp_port}/{clean} "
-                                f"-map 0:v:0 -map 0:a:0? -c:v libx264 -preset ultrafast -tune zerolatency -bf 0 -g 15 -pix_fmt yuv420p "
-                                f"-c:a aac -ar 44100 -ac 1 -b:a 48k "
-                                f"-rtsp_transport tcp -f rtsp rtsp://127.0.0.1:{self.rtsp_port}/{aac_path}"
-                            )
+                            self._clear_hls_probe_state(aac_path)
+                            fix_cmd = self._build_sidecar_ffmpeg_cmd(clean, aac_path, True)
                             await client.post(
                                 f"{self.api_url}/v3/config/paths/add/{aac_path}",
-                                json={"runOnInit": fix_cmd, "runOnInitRestart": False},
+                                json={"runOnInit": fix_cmd, "runOnInitRestart": True},
                             )
                             self._sidecar_video_transcoded[clean] = True
                             self._sidecar_started_at[clean] = time.monotonic()
@@ -500,53 +512,68 @@ class MediaMTXService:
                         sidecar_stalled = True
 
                     if sidecar_stalled:
-                        started_at = self._sidecar_started_at.get(clean, 0.0)
-                        elapsed = (time.monotonic() - started_at) if started_at else 0.0
-                        if elapsed >= 6.0 and not self._sidecar_video_transcoded.get(clean, False):
+                        if elapsed >= 7.0 and not self._sidecar_video_transcoded.get(clean, False):
                             logger.info(
                                 f"HLS copy sidecar {aac_path} produced no stream after {elapsed:.1f}s; "
                                 "rebuilding with H.264 (-bf 0) + AAC."
                             )
                             await client.delete(f"{self.api_url}/v3/config/paths/delete/{aac_path}")
-                            self._hls_verified.discard(aac_path)
-                            ff_log = "error" if settings.STREAM_DEBUG else "quiet"
-                            fix_cmd = (
-                                f"ffmpeg -nostdin -loglevel {ff_log} -rtsp_transport tcp -fflags +discardcorrupt "
-                                f"-analyzeduration 3000000 -probesize 3000000 -max_delay 1000000 "
-                                f"-i rtsp://127.0.0.1:{self.rtsp_port}/{clean} "
-                                f"-map 0:v:0 -map 0:a:0? -c:v libx264 -preset ultrafast -tune zerolatency -bf 0 -g 15 -pix_fmt yuv420p "
-                                f"-c:a aac -ar 44100 -ac 1 -b:a 48k "
-                                f"-rtsp_transport tcp -f rtsp rtsp://127.0.0.1:{self.rtsp_port}/{aac_path}"
-                            )
+                            self._clear_hls_probe_state(aac_path)
+                            fix_cmd = self._build_sidecar_ffmpeg_cmd(clean, aac_path, True)
                             await client.post(
                                 f"{self.api_url}/v3/config/paths/add/{aac_path}",
-                                json={"runOnInit": fix_cmd, "runOnInitRestart": False},
+                                json={"runOnInit": fix_cmd, "runOnInitRestart": True},
                             )
                             self._sidecar_video_transcoded[clean] = True
                             self._sidecar_started_at[clean] = time.monotonic()
                             return {"aac_stream_path": None, "aac_pending": True}
-                        if elapsed >= 14.0 and self._sidecar_video_transcoded.get(clean, False):
+                        if elapsed >= 16.0 and self._sidecar_video_transcoded.get(clean, False):
                             if settings.STREAM_DEBUG:
                                 logger.debug(f"[STREAM_DEBUG] sidecar {aac_path} stalled for {elapsed:.1f}s; giving up.")
                             try:
                                 await client.delete(f"{self.api_url}/v3/config/paths/delete/{aac_path}")
                             except Exception:
                                 pass
-                            self._hls_verified.discard(aac_path)
+                            self._clear_hls_probe_state(aac_path)
                             return {"aac_stream_path": None, "aac_pending": False}
                     return {"aac_stream_path": None, "aac_pending": True}
         except Exception as e:
             logger.debug(f"HLS AAC sidecar notice for {clean}: {e}")
             return {"aac_stream_path": None, "aac_pending": False}
 
+    async def _run_hls_manifest_waiter(self, clean_path: str) -> tuple[int, bool]:
+        """Single background probe waiting for MediaMTX's first fMP4 segment (up to 12s, 1 session total)."""
+        try:
+            client = self._get_media_client()
+            resp = await client.get(
+                f"{self.local_hls_url}/{clean_path}/index.m3u8?cookieCheck=1",
+                cookies={},
+                timeout=12.0,
+            )
+            if resp.status_code == 200 and "#EXTM3U" in resp.text:
+                self._hls_verified.add(clean_path)
+                self._hls_probe_result[clean_path] = (200, False)
+                return 200, False
+            crashed = resp.status_code == 500 and "not available" in resp.text.lower()
+            self._hls_probe_result[clean_path] = (resp.status_code, crashed)
+            return resp.status_code, crashed
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._hls_probe_result[clean_path] = (0, False)
+            return 0, False
+        finally:
+            self._hls_probe_tasks.pop(clean_path, None)
+
     async def _probe_hls_manifest_detail(
         self, clean_path: str, api_client: Optional[httpx.AsyncClient] = None
     ) -> tuple[int, bool]:
         """
-        Check HLS manifest readiness without leaking extra MediaMTX sessions:
-        1. Always verify /v3/hlsmuxers/get/<path> exists first (zero session overhead), invalidating stale cache on 404.
+        Non-blocking HLS manifest readiness check with zero session leaks:
+        1. Always verify /v3/hlsmuxers/get/<path> exists first (~1ms, zero session overhead).
         2. Return (200, False) immediately if already verified for this active stream.
-        3. Probe index.m3u8 once to confirm 200 OK + #EXTM3U (catching HTTP 500 muxer crashes).
+        3. Reuse ONE background index.m3u8 waiter per path (briefly awaiting 150ms so already-ready
+           manifests resolve on Poll 1 while slow-GOP cameras never block status polls or time out).
         """
         try:
             if api_client is not None:
@@ -555,21 +582,28 @@ class MediaMTXService:
                 async with httpx.AsyncClient(timeout=1.5) as tmp_c:
                     hm_res = await tmp_c.get(f"{self.api_url}/v3/hlsmuxers/get/{clean_path}")
             if hm_res.status_code != 200:
-                self._hls_verified.discard(clean_path)
+                self._clear_hls_probe_state(clean_path)
                 return 404, False
             if clean_path in self._hls_verified:
                 return 200, False
-            client = self._get_media_client()
-            resp = await client.get(
-                f"{self.local_hls_url}/{clean_path}/index.m3u8?cookieCheck=1",
-                cookies={},
-                timeout=2.0,
-            )
-            if resp.status_code == 200 and "#EXTM3U" in resp.text:
-                self._hls_verified.add(clean_path)
-                return 200, False
-            crashed = resp.status_code == 500 and "not available" in resp.text.lower()
-            return resp.status_code, crashed
+
+            cached = self._hls_probe_result.get(clean_path)
+            if cached is not None:
+                st, cr = cached
+                if st == 200 or cr:
+                    return st, cr
+                # Prior waiter finished without 200/crash (e.g. timed out or warmup); allow a fresh waiter
+                self._hls_probe_result.pop(clean_path, None)
+
+            task = self._hls_probe_tasks.get(clean_path)
+            if task is None or task.done():
+                task = asyncio.create_task(self._run_hls_manifest_waiter(clean_path))
+                self._hls_probe_tasks[clean_path] = task
+
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), timeout=0.15)
+            except asyncio.TimeoutError:
+                return 0, False
         except Exception:
             return 0, False
 
@@ -593,18 +627,18 @@ class MediaMTXService:
         if qs:
             target = f"{target}?{qs}"
         client = self._get_media_client()
-        max_tries = 4 if file_name == "index.m3u8" else 1
+        max_tries = 3 if file_name == "index.m3u8" else 1
         resp = None
         for attempt in range(max_tries):
             resp = await client.get(target, cookies={})
             if resp.status_code == 500 and attempt < max_tries - 1 and (
                 "waiting to be created" in resp.text.lower()
             ):
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.3)
                 continue
             break
         if resp is not None and resp.status_code in (404, 500):
-            self._hls_verified.discard(clean_path)
+            self._clear_hls_probe_state(clean_path)
         ctype = resp.headers.get("content-type", "application/octet-stream")
         cache_hdr = "no-store, no-cache" if file_name.endswith(".m3u8") else "public, max-age=30"
         return resp.content, resp.status_code, {
@@ -651,8 +685,8 @@ class MediaMTXService:
         async with self._get_path_lock(base_clean):
             self._sidecar_video_transcoded.pop(base_clean, None)
             self._sidecar_started_at.pop(base_clean, None)
-            self._hls_verified.discard(base_clean)
-            self._hls_verified.discard(f"{base_clean}_aac")
+            self._clear_hls_probe_state(base_clean)
+            self._clear_hls_probe_state(f"{base_clean}_aac")
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     res = await client.delete(f"{self.api_url}/v3/config/paths/delete/{base_clean}")
@@ -668,7 +702,8 @@ class MediaMTXService:
         """Stop all currently registered MediaMTX streams and release Tor RTSP bridges."""
         self._sidecar_video_transcoded.clear()
         self._sidecar_started_at.clear()
-        self._hls_verified.clear()
+        for k in list(self._hls_probe_tasks.keys()) + list(self._hls_verified) + list(self._hls_probe_result.keys()):
+            self._clear_hls_probe_state(k)
         await tor_service.stop_all_bridges()
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:

@@ -23,15 +23,16 @@ rtspTransports: [tcp]
 
 # ------------------------------------------
 # HLS (HTTP Live Streaming)
+# Standard fMP4 HLS eliminates LL-HLS blocking reload 404s behind Nginx/Cloudflare/Tor
+# while preserving H.264/H.265/AAC/Opus support and a generous jitter buffer.
 # ------------------------------------------
 hls: true
 hlsAddress: :8888
 hlsAllowOrigins: ["*"]
 hlsAlwaysRemux: true
-hlsVariant: lowLatency
-hlsSegmentCount: 7
+hlsVariant: fmp4
+hlsSegmentCount: 10
 hlsSegmentDuration: 1s
-hlsPartDuration: 500ms
 
 # ------------------------------------------
 # WebRTC (Ultra Low Latency WHEP)
