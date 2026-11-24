@@ -1291,9 +1291,12 @@ class AppController {
     if (window.streamPlayer?.techProto) {
       window.streamPlayer.techProto.textContent = `Port unreachable — skipping to next random cam (${this.randomSkipCount}/${maxConsecutiveSkips})...`;
     }
+    if (window.streamPlayer?.overlaySpinner) {
+      window.streamPlayer.overlaySpinner.style.display = 'none';
+    }
     if (window.streamPlayer?.overlayEl && window.streamPlayer?.overlayMsg) {
       window.streamPlayer.overlayEl.style.display = 'flex';
-      window.streamPlayer.overlayMsg.textContent = `${reason || 'Port unreachable'} — Skipping to another random camera in 2.5s...`;
+      window.streamPlayer.overlayMsg.textContent = `${reason || 'Port unreachable'} — Skipping to next random camera in 2.5s (${this.randomSkipCount}/${maxConsecutiveSkips})...`;
     }
     this.randomAutoSkipTimer = setTimeout(() => {
       this.randomAutoSkipTimer = null;

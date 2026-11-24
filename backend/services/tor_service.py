@@ -482,8 +482,8 @@ class TorProxyService:
         self,
         ip: str,
         port: int,
-        direct_timeout: float = 2.5,
-        tor_timeout: float = 6.5,
+        direct_timeout: float = 2.0,
+        tor_timeout: float = 5.5,
         circuit_key: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
@@ -519,7 +519,7 @@ class TorProxyService:
         base_key = circuit_key or f"{ip}:{port_int}"
         attempts = [
             (base_key, tor_timeout),
-            (f"{base_key}_p{secrets.token_hex(2)}", max(5.0, tor_timeout - 1.0)),
+            (f"{base_key}_p{secrets.token_hex(2)}", max(4.5, tor_timeout - 1.0)),
         ]
         last_reason = "unreachable"
         for idx, (ck, t_out) in enumerate(attempts):

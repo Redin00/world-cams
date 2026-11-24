@@ -62,6 +62,7 @@ class StreamPlayer {
     this.webrtcFrame = document.getElementById('webrtc-frame');
     this.snapshotEl = document.getElementById('stream-snapshot');
     this.overlayEl = document.getElementById('video-overlay');
+    this.overlaySpinner = this.overlayEl ? this.overlayEl.querySelector('.overlay-spinner') : null;
     this.overlayMsg = document.getElementById('overlay-msg');
     this.badgeEl = document.getElementById('player-status-badge');
     this.titleEl = document.getElementById('player-feed-title');
@@ -174,6 +175,7 @@ class StreamPlayer {
     } else {
       if (this.webConsoleDisplay) this.webConsoleDisplay.style.display = 'none';
       if (state === 'CONNECTING') {
+        if (this.overlaySpinner) this.overlaySpinner.style.display = 'block';
         if (this.overlayEl) {
           this.overlayEl.style.display = 'flex';
           this.overlayMsg.textContent = message || 'Negotiating stream route...';
@@ -183,8 +185,18 @@ class StreamPlayer {
         if (this.snapshotEl) this.snapshotEl.style.display = 'none';
         if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
         if (this.videoEl) this.videoEl.style.display = 'block';
+      } else if (state.includes('OFFLINE') || state.includes('UNREACHABLE')) {
+        // Show clear non-spinning offline reason banner so port-check / offline errors are always visible
+        if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
+        if (this.videoEl) this.videoEl.style.display = 'none';
+        if (this.snapshotEl) this.snapshotEl.style.display = 'block';
+        if (this.overlaySpinner) this.overlaySpinner.style.display = 'none';
+        if (this.overlayEl) {
+          this.overlayEl.style.display = message ? 'flex' : 'none';
+          if (message && this.overlayMsg) this.overlayMsg.textContent = message;
+        }
       } else {
-        // Direct HTTP Live stream, Snapshot, or Offline
+        // Direct HTTP Live stream or Snapshot
         if (this.overlayEl) this.overlayEl.style.display = 'none';
         if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
         if (this.videoEl) this.videoEl.style.display = 'none';
@@ -536,8 +548,10 @@ class StreamPlayer {
       if (window.isWebCameraPort(portNum)) {
         this.showWebConsole(feed, `Isolated camera portal on port ${portNum}. Extracting source...`);
       } else {
-        this.setStatus('OFFLINE', `${protoLabel} camera port ${portNum} closed or stream unavailable.`);
+        const offlineMsg = `${protoLabel} camera port ${portNum} closed or stream unavailable.`;
+        this.setStatus('OFFLINE', offlineMsg);
         if (this.techProto) this.techProto.textContent = `Port ${portNum} Unreachable (Offline)`;
+        window.app?.scheduleRandomSkipOnUnreachable?.(targetId, offlineMsg);
       }
     };
 
@@ -760,8 +774,10 @@ class StreamPlayer {
           this.setStatus('SNAPSHOT (RTSP BLOCKED)', `Camera accessible via HTTP, but RTSP port ${portNum} filtered.`);
           if (this.techProto) this.techProto.textContent = `HTTP Snapshot (RTSP ${portNum} Filtered by Firewall)`;
         } else {
-          this.setStatus('RTSP STREAM OFFLINE', `Remote RTSP port ${portNum} not responding.`);
+          const timeoutMsg = `Remote RTSP port ${portNum} not responding.`;
+          this.setStatus('OFFLINE', timeoutMsg);
           if (this.techProto) this.techProto.textContent = `WAN Port ${portNum} Unreachable`;
+          window.app?.scheduleRandomSkipOnUnreachable?.(targetId, timeoutMsg);
         }
       }
     }, connectTimeoutMs);
@@ -829,21 +845,15 @@ class StreamPlayer {
           this.connectTimeoutTimer = null;
         }
         this.teardownMediaEngines();
-        const hasLiveSnapshot = feed.screenshot_url && !feed.screenshot_url.includes('unsplash');
-        if (this.isSnapshotLoaded && hasLiveSnapshot) {
-          this.setStatus('SNAPSHOT (RTSP BLOCKED)', streamData.message || `RTSP port ${portNum} unreachable. Displaying HTTP snapshot.`);
-          if (this.techProto) this.techProto.textContent = `HTTP Snapshot Active (RTSP ${portNum} Unreachable)`;
-        } else {
-          if (this.snapshotEl) {
-            this.snapshotEl.onload = null;
-            this.snapshotEl.onerror = null;
-            this.snapshotEl.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-          }
-          const offlineMsg = streamData.message || `Port ${portNum} unreachable — camera offline or IP changed.`;
-          this.setStatus('RTSP OFFLINE', offlineMsg);
-          if (this.techProto) this.techProto.textContent = `Port ${portNum} Unreachable (Offline / IP Changed)`;
-          window.app?.scheduleRandomSkipOnUnreachable?.(targetId, offlineMsg);
+        if (this.snapshotEl) {
+          this.snapshotEl.onload = null;
+          this.snapshotEl.onerror = null;
+          this.snapshotEl.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
         }
+        const offlineMsg = streamData.message || `Port ${portNum} unreachable — camera offline or IP changed.`;
+        this.setStatus('OFFLINE', offlineMsg);
+        if (this.techProto) this.techProto.textContent = `Port ${portNum} Unreachable (Offline / IP Changed)`;
+        window.app?.scheduleRandomSkipOnUnreachable?.(targetId, offlineMsg);
         return;
       }
 
@@ -898,6 +908,7 @@ class StreamPlayer {
       } else {
         this.setStatus('OFFLINE', 'Remote camera offline.');
         if (this.techProto) this.techProto.textContent = 'Host Unreachable';
+        window.app?.scheduleRandomSkipOnUnreachable?.(targetId, 'Remote camera offline.');
       }
     }
   }
@@ -955,7 +966,9 @@ class StreamPlayer {
         if (this.isSnapshotLoaded && hasLiveSnapshot) {
           this.setStatus('SNAPSHOT (RTSP BLOCKED)', 'HLS stream interrupted. Displaying HTTP snapshot.');
         } else {
-          this.setStatus('RTSP OFFLINE', msg || 'HLS stream interrupted or camera disconnected.');
+          const errMsg = msg || 'HLS stream interrupted or camera disconnected.';
+          this.setStatus('RTSP OFFLINE', errMsg);
+          window.app?.scheduleRandomSkipOnUnreachable?.(targetId, errMsg);
         }
       };
 
@@ -1368,8 +1381,10 @@ class StreamPlayer {
                   this.setStatus('SNAPSHOT (RTSP BLOCKED)', 'HLS muxer unavailable. Displaying HTTP snapshot.');
                   if (this.techProto) this.techProto.textContent = 'HTTP Snapshot Active (HLS Muxer Stalled)';
                 } else {
-                  this.setStatus('RTSP OFFLINE', 'HLS muxer unavailable or camera stopped transmitting keyframes.');
+                  const stallMsg = 'HLS muxer unavailable or camera stopped transmitting keyframes.';
+                  this.setStatus('RTSP OFFLINE', stallMsg);
                   if (this.techProto) this.techProto.textContent = 'HLS Muxer Unavailable';
+                  window.app?.scheduleRandomSkipOnUnreachable?.(targetId, stallMsg);
                 }
                 return;
               }
@@ -1525,8 +1540,10 @@ class StreamPlayer {
           if (this.techProto) this.techProto.textContent = `HTTP Snapshot Active (RTSP ${feed.port} Filtered/Stalled)`;
         } else {
           if (this.webrtcFrame) this.webrtcFrame.style.display = 'none';
-          this.setStatus('RTSP OFFLINE', `Remote camera on port ${feed.port} not transmitting frames.`);
+          const noFrameMsg = `Remote camera on port ${feed.port} not transmitting frames.`;
+          this.setStatus('RTSP OFFLINE', noFrameMsg);
           if (this.techProto) this.techProto.textContent = `Port ${feed.port} Host Unreachable / Filtered`;
+          window.app?.scheduleRandomSkipOnUnreachable?.(targetId, noFrameMsg);
         }
         return;
       }

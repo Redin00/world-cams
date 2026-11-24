@@ -509,17 +509,20 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
         and not _is_demo_camera_target(rtsp_url)
         and not _is_demo_camera_target(preflight_ip)
     ):
+        import time as _t
+        _pf_t0 = _t.monotonic()
         port_ok, port_reason = await tor_service.check_port_reachable(
             preflight_ip,
             preflight_port,
             circuit_key=f"{preflight_ip}:{preflight_port}",
         )
+        _pf_ms = int((_t.monotonic() - _pf_t0) * 1000)
         if await request.is_disconnected():
             raise HTTPException(status_code=499, detail="Client disconnected")
         if not port_ok:
             reason_label = _format_port_unreachable_reason(port_reason)
             logger.info(
-                f"[PREFLIGHT] {preflight_ip}:{preflight_port} unreachable ({port_reason}); stopping immediately."
+                f"[PREFLIGHT] {preflight_ip}:{preflight_port} unreachable ({port_reason}, {_pf_ms}ms); stopping immediately."
             )
             is_web = is_web_camera_port(preflight_port) or bool(rtsp_url and rtsp_url.startswith(("http://", "https://")))
             scheme = "https" if is_https_camera_port(preflight_port) or (rtsp_url and rtsp_url.startswith("https://")) else ("http" if is_web else "rtsp")
@@ -531,12 +534,13 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                 hls_url="",
                 hls_manifest_url="",
                 status="offline",
-                stream_type="offline",
+                stream_type="port_unreachable",
                 web_url=f"{scheme}://{preflight_ip}:{preflight_port}/" if is_web else None,
                 tor_routed=tor_service.should_route_via_tor(preflight_ip),
                 tor_circuit_id=None,
                 message=f"Port {preflight_port} unreachable ({reason_label}) — camera offline or IP changed."
             )
+        logger.info(f"[PREFLIGHT] {preflight_ip}:{preflight_port} reachable ({_pf_ms}ms)")
 
     if feed:
 
@@ -788,10 +792,7 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                     )
             else:
                 probed_unverified = True
-                if resolve_res.get("hard_refused") is True and not any(
-                    k in (rtsp_url or "").lower()
-                    for k in ("rtsp.stream", "pattern", "demo", "simulated", "198.51.100", "203.0.113", "192.0.2")
-                ):
+                if (resolve_res.get("hard_refused") is True or resolve_res.get("reachable") is False) and not _is_demo_camera_target(rtsp_url):
                     return StreamResponse(
                         stream_path=feed.stream_path,
                         rtsp_source=rtsp_url or f"rtsp://{feed.ip}:{feed.port}/",
@@ -800,10 +801,10 @@ async def play_stream(req: StreamStartRequest, request: Request, db: AsyncSessio
                         hls_url="",
                         hls_manifest_url="",
                         status="offline",
-                        stream_type="offline",
+                        stream_type="port_unreachable",
                         tor_routed=tor_service.should_route_via_tor(feed.ip),
                         tor_circuit_id=None,
-                        message=f"RTSP port {feed.port} actively refused connection"
+                        message=f"Port {feed.port} not responding to RTSP — camera offline or IP changed."
                     )
 
     if not rtsp_url:
